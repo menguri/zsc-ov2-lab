@@ -1,6 +1,6 @@
 # Overcooked-V2 Experiments
 
-이 저장소는 [Overcooked-V2] 환경에서 Zero-Shot Coordination (ZSC)을 위한 다양한 기준 모델(baselines)을 구현하고, 추가적인 연구를 진행하기 위해 만들어졌습니다. [overcookedv2/experiments](https://github.com/overcookedv2/experiments) 저장소를 참고하여 개발되었습니다.
+이 저장소는 [Overcooked-V2] 환경에서 Zero-Shot Coordination (ZSC)을 위한 다양한 기준 모델(baselines)을 구현하고, 추가적인 연구를 진행하기 위해 만들어졌습니다. JAX 기반으로 구현된 [overcooked-v2/experiments] (https://github.com/overcookedv2/experiments)를 참고했습니다.
 
 ## 설치 (Installation)
 
@@ -20,7 +20,7 @@ pip install -e experiments
 
 ### Simple Layouts
 
-| `grounded_coord_simple` | `demo_cook_simple` | `test_time_simple` |
+| `grounded_coord_simple` | `demo_cook_simple` | `test_time_simple`
 | :---: | :---: | :---: |
 | ![ground_simple_sp](./readme-figure/ground_simple_sp.gif) | ![demo_simple_sp](./readme-figure/demo_simple_sp.gif) | ![test_simple_sp](./readme-figure/test_simple_sp.gif) |
 
