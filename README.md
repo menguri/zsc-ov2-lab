@@ -1,6 +1,6 @@
 # Overcooked-V2 Experiments
 
-이 저장소는 [Overcooked-V2](https://github.com/human-agent-learning/overcooked_ai) 환경에서 Zero-Shot Coordination (ZSC)을 위한 다양한 기준 모델(baselines)을 구현하고, 추가적인 연구를 진행하기 위해 만들어졌습니다.
+이 저장소는 [Overcooked-V2] 환경에서 Zero-Shot Coordination (ZSC)을 위한 다양한 기준 모델(baselines)을 구현하고, 추가적인 연구를 진행하기 위해 만들어졌습니다. [overcookedv2/experiments](https://github.com/overcookedv2/experiments) 저장소를 참고하여 개발되었습니다.
 
 ## 설치 (Installation)
 
@@ -20,8 +20,8 @@ pip install -e experiments
 
 ### Simple Layouts
 
-| `grounded_coord_simple` | `demo_cook_simple` | `test_time_simple`
-| :---: | :---: |
+| `grounded_coord_simple` | `demo_cook_simple` | `test_time_simple` |
+| :---: | :---: | :---: |
 | ![ground_simple_sp](./readme-figure/ground_simple_sp.gif) | ![demo_simple_sp](./readme-figure/demo_simple_sp.gif) | ![test_simple_sp](./readme-figure/test_simple_sp.gif) |
 
 ### Hard Layouts
@@ -30,7 +30,7 @@ pip install -e experiments
 | :---: | :---: | :---: |
 | ![ground_ring_sp](./readme-figure/ground_ring_sp.gif) | ![demo_wide_sp](./readme-figure/demo_wide_sp.gif) | ![test_wide_sp](./readme-figure/test_wide_sp.gif) |
 
-<br/>ex-overcookedv2/experiments/runs/20251120-080837_pde5eo6h_demo_cook_simple_avs-2-256-sp
+<br/>
 
 ## 실험 실행 (Running Experiments)
 
