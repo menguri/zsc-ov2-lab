@@ -1,0 +1,27 @@
+[1] fcp를 하려면 fcp_population을 채워야 하는 것으로 보임
+[2] jax, cuda version 맞추는게 매우 중요
+- cuda 12.9를 맞춰줘야 cuDNN이 병렬도 돌아감. 일단은 xla에서 네트쿽 돌아가도록 설정하고 나중에 병렬 실행하도록.
+[3] flax에서 뭔가 이상함
+[4] 다시 pip 부터 가야할 듯
+[5] fcp를 위해서 self-play checkpoint는 좀 더 자주 저장하도록 설정해야 함.
+[6] fcp할 때 병렬 학습 진행하는데 이때 shape 문제가 좀 있는 것으로 생각됨. 이 부분을 잘 해결해야 fcp가 돌아갈 것으로 보임.
+
+
+(실험) nenvs/nsteps를 256/256으로 잡고, 한번 싹 실험해야 할듯
+- grounded: sp
+- demo: st
+- fcp -> grounded 되는대로 바로 ㄱㄱ
+
+(세팅)
+agent를 index=0으로 두냐, index=1로 두냐에 따라 차이가 있음.
+E3T에서도 index 섞지 않고 한 곳만 E3T, 나머지를 test agent로 채웠음.
+partner에 대해 random policy를 주는데, 이 파트너의 stating position이 swap될지도 봐야함.
+(asymmetric layout에서!)
+ 
+[jax 캐시 클리어]
+캐시 클리어 방법
+터미널에서 실행:
+    - 권장사항  
+    - 코드 변경 후: 캐시 클리어 후 재실행
+    - 새 세션 시작 시: 캐시 클리어로 깨끗한 상태 유지
+    - 프로덕션: 캐시를 유지하지만, 개발 중에는 적극적으로 클리어

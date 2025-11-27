@@ -1,0 +1,6 @@
+jaxmarl
+imageio
+matplotlib
+pandas
+seaborn
+clu

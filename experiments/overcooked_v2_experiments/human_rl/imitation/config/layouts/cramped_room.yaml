@@ -1,0 +1,4 @@
+"LAYOUT": "cramped_room"
+"EPOCHS": 100
+"LR": 1e-3
+"ADAM_EPS": 1e-8
