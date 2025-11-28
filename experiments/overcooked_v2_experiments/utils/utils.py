@@ -57,8 +57,8 @@ def scanned_mini_batch_map(f, num_mini_batches, use_pmap=False, num_devices=None
 def mini_batch_pmap(f, num_mini_batches):
     # 한국어 주석: 단일 디바이스(num_mini_batches=1)에서는 pmap 이점이 없고, 축 오류 위험이 커서
     # 그대로 f를 반환해 직접 호출 또는 상위에서 vmap을 사용하도록 합니다.
-    if num_mini_batches == 1:
-        return f
+    # if num_mini_batches == 1:
+    #     return f
 
     def mapped_fn(*args, **kwargs):
         outer_dim = _check_and_return_outer_dim(args, kwargs, num_mini_batches)
