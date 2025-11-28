@@ -30,7 +30,7 @@ cd "$(dirname "$0")" || exit 1
 # --------------------------------------------------------------------
 # grounded_coord_ring — 고정 레이아웃
 # --------------------------------------------------------------------
-./run_user_wandb.sh --gpus 5,1,2,6,0 --env grounded_coord_ring --exp rnn-sp --env-device cpu --nenvs 256 --nsteps 256
+# ./run_user_wandb.sh --gpus 2,3,4,6,7 --env grounded_coord_ring --exp rnn-sp --env-device cpu --nenvs 256 --nsteps 256
 # ./run_user_wandb.sh --gpus 4 --env grounded_coord_ring --exp rnn-sa --iterations 10 --env-device cpu --nenvs 256 --nsteps 256
 # ./run_user_wandb.sh --gpus 4 --env grounded_coord_ring --exp rnn-op --env-device cpu --nenvs 256 --nsteps 256
 # ./run_user_wandb.sh --gpus 0 --env grounded_coord_ring --exp rnn-fcp --fcp fcp_populations/grounded_coord_ring --env-device cpu --nenvs 256 --nsteps 256 --fcp-device "$FCP_DEVICE"
@@ -66,7 +66,7 @@ cd "$(dirname "$0")" || exit 1
 # # --------------------------------------------------------------------
 # # test_time_wide — 고정 레이아웃
 # # --------------------------------------------------------------------
-# ./run_user_wandb.sh --gpus 6,7 --env test_time_wide --exp rnn-sp --env-device cpu --nenvs 256 --nsteps 256
+./run_user_wandb.sh --gpus 0,3,4,6,7 --env test_time_wide --exp rnn-sp --env-device cpu --nenvs 256 --nsteps 256
 # ./run_user_wandb.sh --gpus 2 --env test_time_wide --exp rnn-sa --iterations 5 --env-device cpu --nenvs 256 --nsteps 256
 # ./run_user_wandb.sh --gpus 2 --env test_time_wide --exp rnn-op --env-device cpu --nenvs 256 --nsteps 256
 # ./run_user_wandb.sh --gpus 0 --env test_time_wide --exp rnn-fcp --fcp fcp_populations/test_time_wide --env-device cpu --nenvs 256 --nsteps 256

@@ -811,7 +811,7 @@ def make_train(
             metric["update_step"] = update_step
             # 환경과 상호작용한 총 스텝 수 계산 (update * rollout_length * num_envs)
             metric["env_step"] = (
-                update_step * model_config["NUM_STEPS"] * model_config["NUM_ENVS"]
+                update_step * model_config["NUM_STEPS"] * model_config["NUM_ENVS"]                                                                 
             )
 
             # WandB 로깅 콜백: JAX 계산 그래프 밖에서 실행되도록 debug.callback 사용
