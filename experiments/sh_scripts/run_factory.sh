@@ -66,7 +66,7 @@ cd "$(dirname "$0")" || exit 1
 # # --------------------------------------------------------------------
 # # test_time_wide — 고정 레이아웃
 # # --------------------------------------------------------------------
-./run_user_wandb.sh --gpus 0,3,4,6,7 --env test_time_wide --exp rnn-sp --env-device cpu --nenvs 256 --nsteps 256
+./run_user_wandb.sh --gpus 2,3,4,6,7 --env test_time_wide --exp rnn-sp --env-device cpu --nenvs 256 --nsteps 256
 # ./run_user_wandb.sh --gpus 2 --env test_time_wide --exp rnn-sa --iterations 5 --env-device cpu --nenvs 256 --nsteps 256
 # ./run_user_wandb.sh --gpus 2 --env test_time_wide --exp rnn-op --env-device cpu --nenvs 256 --nsteps 256
 # ./run_user_wandb.sh --gpus 0 --env test_time_wide --exp rnn-fcp --fcp fcp_populations/test_time_wide --env-device cpu --nenvs 256 --nsteps 256
