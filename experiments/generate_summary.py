@@ -91,8 +91,8 @@ if __name__ == '__main__':
     parser.add_argument(
         '--start-date', 
         type=str, 
-        default='20251126',
-        help="분석을 시작할 날짜 (YYYYMMDD 형식). 기본값: 20251120"
+        default='20251128',
+        help="분석을 시작할 날짜 (YYYYMMDD 형식). 기본값: 20251128"
     )
     parser.add_argument(
         '--output-file', 

@@ -11,12 +11,14 @@ class CNN(nn.Module):
 
     @nn.compact
     def __call__(self, x, train=False):
+        print("CNN input shape:", x.shape)
         x = nn.Conv(
             features=128,
             kernel_size=(1, 1),
             kernel_init=orthogonal(jnp.sqrt(2)),
             bias_init=constant(0.0),
         )(x)
+        print("CNN after first conv shape:", x.shape)
         x = self.activation(x)
         x = nn.Conv(
             features=128,

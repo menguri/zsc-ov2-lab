@@ -52,7 +52,7 @@ class ActorCriticRNN(ActorCriticBase):
     def __call__(self, hidden, x, train=False):
         obs, dones = x
 
-        # print("cnn shapes", hidden.shape, obs.shape, dones.shape)
+        print("cnn shapes", hidden.shape, obs.shape, dones.shape)
 
         embedding = obs
 
@@ -76,6 +76,8 @@ class ActorCriticRNN(ActorCriticBase):
             output_size=self.config["GRU_HIDDEN_DIM"],
             activation=activation,
         )
+
+        # embedding = embed_model(embedding)
         embedding = jax.vmap(embed_model)(embedding)
 
         embedding = nn.LayerNorm()(embedding)

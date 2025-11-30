@@ -24,14 +24,14 @@ echo "Starting visualization factory by environment..."
 
 # # grounded_coord_ring
 # echo "Processing grounded_coord_ring..."
-# ./run_visualize.sh --gpu 6 --dir runs/20251124-041504_avniwfdw_grounded_coord_ring_avs-2-256-sp --num_seeds 10 --no_viz
+./run_visualize.sh --gpu 6 --dir runs/20251128-024034_9t2oq9um_grounded_coord_ring_sp --all --num_seeds 10 --no_viz
 # ./run_visualize.sh --gpu 1 --dir runs/20251123-134106_zma7dqet_grounded_coord_ring_avs-2-256-op --all --num_seeds 10 --no_viz
 # ./run_visualize.sh --gpu 1 --dir runs/20251123-134505_t31pjfr9_grounded_coord_ring_avs-2-256-st --all --num_seeds 10 --no_viz
 # ./run_visualize.sh --gpu 1 --dir runs/20251126-091833_n8hgdq5c_grounded_coord_ring_avs-2-256-fcp --all --num_seeds 10 --no_viz
 
 # # demo_cook_simple
 # echo "Processing demo_cook_simple..."
-./run_visualize.sh --gpu 7 --dir runs/20251120-080837_pde5eo6h_demo_cook_simple_avs-2-256-sp --num_seeds 10 --no_viz
+# ./run_visualize.sh --gpu 7 --dir runs/20251120-080837_pde5eo6h_demo_cook_simple_avs-2-256-sp --num_seeds 10 --no_viz
 # ./run_visualize.sh --gpu 1 --dir runs/20251120-090142_wc7pazic_demo_cook_simple_avs-2-256-op --all --num_seeds 10 --no_viz
 # ./run_visualize.sh --gpu 5 --dir runs/20251126-101817_2ty6yw06_demo_cook_simple_avs-2-256-fcp
 
@@ -51,7 +51,7 @@ echo "Starting visualization factory by environment..."
 
 # # test_time_wide
 # echo "Processing test_time_wide..."
-# ./run_visualize.sh --gpu 6 --dir runs/20251121-052929_pkll1ddh_test_time_wide_avs-2-256-sp --num_seeds 10
+./run_visualize.sh --gpu 6 --dir runs/20251128-025655_s497eete_test_time_wide_sp --all --num_seeds 10 --no_viz
 # ./run_visualize.sh --gpu 1 --dir runs/20251121-060742_j5mcuaiw_test_time_wide_avs-2-256-op --all --num_seeds 10 --no_viz
 # ./run_visualize.sh --gpu 1 --dir runs/20251126-131745_87hrfx3w_test_time_wide_avs-2-256-fcp --all --num_seeds 10 --no_viz
 

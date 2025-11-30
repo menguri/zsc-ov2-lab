@@ -15,24 +15,24 @@ FCP_DEVICE=${1:-gpu}
 # --------------------------------------------------------------------
 # grounded_coord_ring — 고정 레이아웃
 # --------------------------------------------------------------------
-./run_user_wandb.sh --gpus 0,1,2,3,4 --env grounded_coord_ring --exp rnn-fcp --fcp fcp_populations/grounded_coord_ring_avs-2-256-sp --env-device cpu --nenvs 256 --nsteps 256 --seeds 10 --fcp-device "$FCP_DEVICE"
+./run_user_wandb.sh --gpus 2,3,4,6,7 --env grounded_coord_ring --exp rnn-fcp --fcp fcp_populations/grounded_coord_ring_sp --env-device cpu --nenvs 256 --nsteps 256 --seeds 10 --fcp-device "$FCP_DEVICE"
 
-# --------------------------------------------------------------------
-# demo_cook_simple — 고정 레이아웃
-# --------------------------------------------------------------------
-./run_user_wandb.sh --gpus 0,1,2,3,4 --env demo_cook_simple --exp rnn-fcp --fcp fcp_populations/demo_cook_simple_avs-2-256-sp --env-device cpu --nenvs 256 --nsteps 256 --seeds 10 --fcp-device "$FCP_DEVICE"
+# # --------------------------------------------------------------------
+# # demo_cook_simple — 고정 레이아웃
+# # --------------------------------------------------------------------
+# ./run_user_wandb.sh --gpus 0,1,2,3,4 --env demo_cook_simple --exp rnn-fcp --fcp fcp_populations/demo_cook_simple_avs-2-256-sp --env-device cpu --nenvs 256 --nsteps 256 --seeds 10 --fcp-device "$FCP_DEVICE"
 
-# --------------------------------------------------------------------
-# demo_cook_wide — 고정 레이아웃
-# --------------------------------------------------------------------
-./run_user_wandb.sh --gpus 0,1,2,3,4 --env demo_cook_wide --exp rnn-fcp --fcp fcp_populations/demo_cook_wide_avs-2-256-sp --env-device cpu --nenvs 256 --nsteps 256 --seeds 10 --fcp-device "$FCP_DEVICE"
+# # --------------------------------------------------------------------
+# # demo_cook_wide — 고정 레이아웃
+# # --------------------------------------------------------------------
+# ./run_user_wandb.sh --gpus 0,1,2,3,4 --env demo_cook_wide --exp rnn-fcp --fcp fcp_populations/demo_cook_wide_avs-2-256-sp --env-device cpu --nenvs 256 --nsteps 256 --seeds 10 --fcp-device "$FCP_DEVICE"
 
-# --------------------------------------------------------------------
-# test_time_simple — 고정 레이아웃
-# --------------------------------------------------------------------
-./run_user_wandb.sh --gpus 0,1,2,3,4 --env test_time_simple --exp rnn-fcp --fcp fcp_populations/test_time_simple_avs-2-256-sp --env-device cpu --nenvs 256 --nsteps 256 --seeds 10 --fcp-device "$FCP_DEVICE"
+# # --------------------------------------------------------------------
+# # test_time_simple — 고정 레이아웃
+# # --------------------------------------------------------------------
+# ./run_user_wandb.sh --gpus 0,1,2,3,4 --env test_time_simple --exp rnn-fcp --fcp fcp_populations/test_time_simple_avs-2-256-sp --env-device cpu --nenvs 256 --nsteps 256 --seeds 10 --fcp-device "$FCP_DEVICE"
 
 # --------------------------------------------------------------------
 # test_time_wide — 고정 레이아웃
 # --------------------------------------------------------------------
-./run_user_wandb.sh --gpus 0,1,2,3,4 --env test_time_wide --exp rnn-fcp --fcp fcp_populations/test_time_wide_avs-2-256-sp --env-device cpu --nenvs 256 --nsteps 256 --seeds 10 --fcp-device "$FCP_DEVICE"
+# ./run_user_wandb.sh --gpus 2,3,4,6,7 --env test_time_wide --exp rnn-fcp --fcp fcp_populations/test_time_wide_sp --env-device cpu --nenvs 256 --nsteps 256 --seeds 10 --fcp-device "$FCP_DEVICE"

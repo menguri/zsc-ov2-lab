@@ -22,6 +22,7 @@ partner에 대해 random policy를 주는데, 이 파트너의 stating position�
  
 [jax 캐시 클리어]
 캐시 클리어 방법
+rm -rf ~/.jax_cache
 터미널에서 실행:
     - 권장사항  
     - 코드 변경 후: 캐시 클리어 후 재실행

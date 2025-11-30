@@ -269,9 +269,7 @@ def make_train(
                     population_config, model_config["NUM_ACTORS"]
                 )
 
-                fcp_population_size = jax.tree_util.tree_flatten(population)[0][
-                    0
-                ].shape[0]
+                fcp_population_size = jax.tree_util.tree_flatten(population)[0][0].shape[0]
                 print("FCP population size", fcp_population_size)
 
                 # print(f"normal hstate {init_hstate.shape}")
