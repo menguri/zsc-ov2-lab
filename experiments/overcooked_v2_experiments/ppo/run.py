@@ -26,93 +26,6 @@ from overcooked_v2_experiments.ppo.utils.visualize_ppo import visualize_ppo_poli
 jax.config.update("jax_debug_nans", True)
 
 
-# def load_fcp_populations(population_dir):
-#     def _load_fcp_population(dir):
-#         all_checkpoints, fcp_config = load_all_checkpoints(
-#             dir, final_only=False, skip_initial=False
-#         )
-#         ppo_params_list, _ = jax.tree_util.tree_flatten(
-#             all_checkpoints, is_leaf=lambda x: type(x) is PPOParams
-#         )
-#         print(
-#             f"Loaded FCP population params for {len(ppo_params_list)} policies from {dir}"
-#         )
-#         return ppo_params_list, fcp_config
-
-#     all_policies = []
-#     first_fcp_config = None
-
-#     # 🔧 (통하지 않음) leaf-level에서 Conv 커널 모양을 (1,1,Cin,Cout) -> (1,Cin,Cout)로 맞춰주는 함수
-#     # def fix_conv_kernel_leaf(x):
-#     #     import jax.numpy as jnp
-#     #     if isinstance(x, jnp.ndarray):
-#     #         # Checkpoint has (1, 1, Cin, Cout), we want (1, Cin, Cout)
-#     #         if x.ndim == 4 and x.shape[0] == 1 and x.shape[1] == 1:
-#     #             return x.reshape((1, x.shape[2], x.shape[3]))
-#     #     return x
-
-#     for dir in population_dir.iterdir():
-#         if not dir.is_dir() or "fcp_" not in dir.name:
-#             continue
-
-#         print(f"Loading FCP population from {dir}")
-#         ppo_params_list, fcp_config = _load_fcp_population(dir)  # list[PPOParams]
-
-#         for ppo_params in ppo_params_list:
-#             # ✅ 여기서 그냥 PPOParams 안에 있는 params만 꺼내고,
-            
-#             params_dict = ppo_params.params   # 보통 {'params': {...}} 형태일 것
-
-#             # 여기에서만 커널 모양을 한 번 수정해준다.
-#             # params_dict = jax.tree_util.tree_map(fix_conv_kernel_leaf, params_dict)
-
-#             all_policies.append(params_dict)
-
-#         if first_fcp_config is None:
-#             first_fcp_config = fcp_config
-
-#     print(f"Successfully loaded {len(all_policies)} FCP policies")
-
-#     if len(all_policies) == 0:
-#         raise ValueError(f"No FCP populations found in {population_dir}")
-
-#     stacked_populations = jax.tree_util.tree_map(
-#         lambda *xs: jnp.stack(xs), *all_policies
-#     )
-#     # leaf: (num_policies, ...)  ex) (30, 1, 1, 38, 128) 이런 식
-
-#     return stacked_populations, first_fcp_config
-# def load_fcp_populations(population_dir):
-#     def _load_fcp_population(dir):
-#         all_checkpoints, fcp_config = load_all_checkpoints(
-#             dir, final_only=False, skip_initial=True
-#         )
-#         all_population_params, _ = jax.tree_util.tree_flatten(
-#             all_checkpoints, is_leaf=lambda x: type(x) is PPOParams
-#         )
-#         print(
-#             f"Loaded FCP population params for {len(all_population_params)} policies from {dir}"
-#         )
-#         all_population_params = jax.tree_util.tree_map(
-#             lambda *v: jnp.stack(v), *all_population_params
-#         )
-#         return all_population_params, fcp_config
-
-#     all_populations = []
-#     first_fcp_config = None
-#     for dir in population_dir.iterdir():
-#         if not dir.is_dir() or "fcp_" not in dir.name:
-#             continue
-
-#         print(f"Loading FCP population from {dir}")
-#         population, fcp_config = _load_fcp_population(dir)
-#         all_populations.append(population)
-#         if first_fcp_config is None:
-#             first_fcp_config = fcp_config
-
-#     print(f"Successfully loaded {len(all_populations)} FCP populations")
-#     all_populations = jax.tree_util.tree_map(lambda *v: jnp.stack(v), *all_populations)
-#     return all_populations, first_fcp_config
 def load_fcp_populations(population_dir: Path):
     """
     FCP population 디렉토리 아래 모든 fcp_* 폴더에서
@@ -136,8 +49,8 @@ def load_fcp_populations(population_dir: Path):
         """
         all_checkpoints, fcp_config = load_all_checkpoints(
             dir,
-            final_only=False,
-            skip_initial=False,   # 원본과 동일 동작. 필요하면 False로 바꿔도 됨.
+            final_only=True,
+            skip_initial=True,   # 원본과 동일 동작. 필요하면 False로 바꿔도 됨.
         )
 
         # all_checkpoints 안에서 PPOParams만 leaf로 취급해서 리스트로 뽑기
@@ -236,6 +149,9 @@ def single_run(config):
     with jax.disable_jit(False):
         rng = jax.random.PRNGKey(config["SEED"])
         rngs = jax.random.split(rng, num_runs)
+        
+        # 디버그: 생성된 시드 값 확인
+        print(f"[DEBUG] Generated rngs (first elements): {[int(k[0]) for k in rngs]}")
 
         config_copy = copy.deepcopy(config)
         if bc_policy is not None:
@@ -255,22 +171,47 @@ def single_run(config):
         print("Using", num_devices, "devices")
 
         # ---- FCP일 때: population은 클로저로 고정 ----
-        if all_populations is not None:
-            print("Training with FCP")
+        # if all_populations is not None:
+        #     print("Training with FCP")
 
-            def train_with_pop(rng):
-                # 여기서 population을 고정 파라미터로 넣어줌
-                return train_func(rng, population=all_populations)
+        #     def train_with_pop(rng):
+        #         # 여기서 population을 고정 파라미터로 넣어줌
+        #         return train_func(rng, population=all_populations)
 
-            train_with_pop_jit = jax.jit(train_with_pop)
+        #     train_with_pop_jit = jax.jit(train_with_pop)
 
-            # ✅ 여기서 mini_batch_pmap 재사용
-            out = mini_batch_pmap(train_with_pop_jit, num_devices)(rngs)
-            return out
+        #     # ✅ 여기서 mini_batch_pmap 재사용
+        #     # out = mini_batch_pmap(train_with_pop_jit, num_devices)(rngs)
+        #     # return out
+            
+        #     # Explicit pmap logic to avoid ambiguity
+        #     seed_n = rngs.shape[0]
+        #     print(f"[DEBUG] seed_n={seed_n}, num_devices={num_devices}")
+        #     if num_devices <= 1:
+        #         if seed_n == 1:
+        #             print("[DEBUG] Running single device, single seed")
+        #             out = train_with_pop_jit(rngs[0])
+        #         else:
+        #             print("[DEBUG] Running single device, vmap")
+        #             out = jax.vmap(train_with_pop_jit)(rngs)
+        #     else:
+        #         if seed_n == num_devices:
+        #             print("[DEBUG] Running pmap (1 seed per device)")
+        #             out = jax.pmap(train_with_pop_jit)(rngs)
+        #         elif seed_n % num_devices == 0:
+        #             seeds_per_device = seed_n // num_devices
+        #             print(f"[DEBUG] Running pmap+vmap (seeds_per_device={seeds_per_device})")
+        #             rngs_2d = rngs.reshape((num_devices, seeds_per_device, *rngs.shape[1:]))
+        #             out = jax.pmap(jax.vmap(train_with_pop_jit))(rngs_2d)
+        #             out = jax.tree_util.tree_map(lambda x: x.reshape((seed_n, *x.shape[2:])), out)
+        #         else:
+        #             print(f"[warn] num_seeds({seed_n}) % num_devices({num_devices}) != 0; falling back to single-device vmap")
+        #             out = jax.vmap(train_with_pop_jit)(rngs)
+        #     return out
 
 
         # 시드 하나 단위로 학습을 돌리기 위해, 그 학습을 병렬로 처리
-        train_jit = jax.jit(train_func)
+        # train_jit = jax.jit(train_func)  <-- pmap 내부에서 jit을 또 부르는 것을 방지하기 위해 주석 처리
 
         train_extra_args = {}
         if all_populations is not None:
@@ -281,103 +222,49 @@ def single_run(config):
             print("Using BC policy", bc_policy)
             train_extra_args["population"] = bc_policy
 
-        out = mini_batch_pmap(train_jit, num_devices)(rngs, **train_extra_args)
+        # out = mini_batch_pmap(train_jit, num_devices)(rngs, **train_extra_args)
+        
+        # Explicit pmap logic for SP/BC
+        def train_wrapper(rng):
+            # pmap/vmap 내부에서 실행되므로 여기서 train_func를 직접 호출 (JAX가 알아서 컴파일)
+            return train_func(rng, **train_extra_args)
+            
+        seed_n = rngs.shape[0]
+        
+        # 중요: 멀티 GPU 분배 시 P2P 복사 문제를 방지하기 위해 rngs를 CPU로 이동
+        rngs = jax.device_put(rngs, jax.devices("cpu")[0])
+        
+        if num_devices <= 1:
+            # 단일 디바이스일 때는 JIT를 명시적으로 걸어주는 것이 좋음 (pmap을 안 쓰므로)
+            train_jit = jax.jit(train_func)
+            def train_wrapper_jit(rng):
+                return train_jit(rng, **train_extra_args)
+
+            if seed_n == 1:
+                out = train_wrapper_jit(rngs[0])
+            else:
+                out = jax.vmap(train_wrapper_jit)(rngs)
+        else:
+            if seed_n == num_devices:
+                out = jax.pmap(train_wrapper)(rngs)
+            elif seed_n % num_devices == 0:
+                seeds_per_device = seed_n // num_devices
+                rngs_2d = rngs.reshape((num_devices, seeds_per_device, *rngs.shape[1:]))
+                
+                # Debug: Check if rngs_2d contains zeros
+                # We can't easily print JAX arrays here without triggering computation, 
+                # but we can check if it's all zeros if we suspect initialization issues.
+                # Instead, let's rely on ippo.py's debug print.
+                
+                out = jax.pmap(jax.vmap(train_wrapper))(rngs_2d)
+                out = jax.tree_util.tree_map(lambda x: x.reshape((seed_n, *x.shape[2:])), out)
+            else:
+                print(f"[warn] num_seeds({seed_n}) % num_devices({num_devices}) != 0; falling back to single-device vmap")
+                # fallback 시에도 jit 사용
+                train_jit = jax.jit(train_func)
+                def train_wrapper_jit(rng):
+                    return train_jit(rng, **train_extra_args)
+                out = jax.vmap(train_wrapper_jit)(rngs)
 
         return out
-    
 
-
-# def single_run(config):
-    # num_seeds = config["NUM_SEEDS"]
-    # num_runs = num_seeds
-
-    # all_populations = None
-    # if "FCP" in config:
-    #     print("Training FCP")
-    #     # NOTE: FCP에서도 여러 시드 지원. 각 시드에서 같은 population을 사용해 ego agent 훈련.
-    #     # population은 시드별로 다시 로드됨 (비효율적일 수 있음).
-    #     print("Loading population from", config["FCP"])
-    #     population_dir = Path(config["FCP"])
-
-    #     all_populations, fcp_population_config = load_fcp_populations(population_dir)
-    #     fcp_policy = FCPWrapperPolicy(config, *all_populations)
-
-    #     print(f"Loaded FCP population with {len(all_populations)} policies")
-
-    # bc_policy = None
-    # if "BC" in config:
-    #     print("Training with BC")
-    #     layout_name = config["env"]["ENV_KWARGS"]["layout"]
-    #     split = "all"
-    #     run_id = 1
-    #     print(f"Loading BC policy from {layout_name}-{split}-{run_id}")
-    #     bc_policy = BCPolicy.from_pretrained(layout_name, split, run_id)
-
-    # with jax.disable_jit(False):
-    #     rng = jax.random.PRNGKey(config["SEED"])
-    #     rngs = jax.random.split(rng, num_runs)
-
-    #     config_copy = copy.deepcopy(config)
-    #     if bc_policy is not None:
-    #         config_copy["env"]["ENV_KWARGS"]["force_path_planning"] = True
-
-    #     population_config = None
-
-    #     rngs = jax.random.split(jax.random.PRNGKey(config["SEED"]), num_runs)
-
-    #     train_func = make_train(
-    #         config_copy,
-    #         population_config=population_config,
-    #     )
-
-    #     # num_devices = len(jax.devices("gpu"))
-    #     # num_devices = 1
-    #     num_devices = get_num_devices()
-    #     print("Using", num_devices, "devices")
-
-    #     train_jit = jax.jit(train_func, static_argnames=['population'])
-
-    #     # 한국어 주석: population(또는 BC policy) 같은 큰 PyTree/비배열 인자를 pmap 인자로 넘기면
-    #     # in_axes=0 기본 규칙 때문에 축 매핑 대상이 되어 rank 0 오류가 날 수 있습니다.
-    #     # 따라서 이러한 인자는 pmap 인자에서 제거하고, 클로저로 캡처하여 브로드캐스트(모든 디바이스에서 동일 사용)합니다.
-    #     train_extra_args = {}
-    #     if all_populations is not None:
-    #         print("Training with FCP")
-    #         train_extra_args["population"] = fcp_policy
-    #     elif bc_policy is not None:
-    #         print("Training with BC")
-    #         print("Using BC policy", bc_policy)
-    #         train_extra_args["population"] = bc_policy
-
-    #     # 한국어 주석: pmap/vmap에 넘길 함수는 rng 하나만을 인자로 받도록 래핑합니다.
-    #     def train_with_pop(rng):
-    #         return train_jit(rng, **train_extra_args)
-
-    #     # 한국어 주석: 디바이스 수에 따라 안전하게 분기합니다.
-    #     # - GPU 1장: pmap 대신 직접 호출 또는 vmap 사용 (pmap 축 오류 방지)
-    #     # - GPU 여러장: 시드 축을 디바이스 축으로 매핑. 시드 수가 디바이스 수의 배수인 경우 2D로 reshape 후 pmap(jax.vmap) 사용
-    #     seed_n = rngs.shape[0]
-    #     if num_devices <= 1:
-    #         if seed_n == 1:
-    #             out = train_with_pop(rngs[0])
-    #         else:
-    #             out = jax.vmap(train_with_pop)(rngs)
-    #     else:
-    #         if seed_n == num_devices:
-    #             # (num_devices, ...) 형태로 바로 pmap
-    #             out = jax.pmap(train_with_pop)(rngs)
-    #         elif seed_n % num_devices == 0:
-    #             # (num_devices, seeds_per_device, ...) 형태로 나누어 각 디바이스에서 vmap
-    #             seeds_per_device = seed_n // num_devices
-    #             rngs_2d = rngs.reshape((num_devices, seeds_per_device, *rngs.shape[1:]))
-    #             out = jax.pmap(jax.vmap(train_with_pop))(rngs_2d)
-    #             # pmap(jax.vmap) 결과를 다시 (seed_n, ...)로 평탄화
-    #             out = jax.tree_util.tree_map(lambda x: x.reshape((seed_n, *x.shape[2:])), out)
-    #         else:
-    #             # 시드 수가 디바이스 수의 배수가 아니면, 단일 디바이스 경로로 안전 처리
-    #             print(
-    #                 f"[warn] num_seeds({seed_n}) % num_devices({num_devices}) != 0; falling back to single-device vmap"
-    #             )
-    #             out = jax.vmap(train_with_pop)(rngs)
-
-    #     return out

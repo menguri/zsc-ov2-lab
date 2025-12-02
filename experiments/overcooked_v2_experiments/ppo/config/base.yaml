@@ -2,6 +2,7 @@ defaults:
   # - env: default
   - wandb: default
   - model: cnn
+  - confidence: disabled
 
 SEED: 42
 NUM_SEEDS: 10
@@ -10,6 +11,13 @@ NUM_CHECKPOINTS: 3
 VISUALIZE: False
 
 # NUM_ITERATIONS: 10
+
+confidence_trigger:
+  enabled: false
+  mode: under        # under = trigger on low confidence, over = trigger on high confidence
+  entropy_threshold: 0.8
+  cooldown_steps: 5  # number of env steps to enforce alternative partner behavior
+  target: partner    # partner | ego | both (future use)
 
 # Panic mode (partner random action only) global defaults.
 # "panic-sp" experiment will override enabled/start_step/duration as needed.

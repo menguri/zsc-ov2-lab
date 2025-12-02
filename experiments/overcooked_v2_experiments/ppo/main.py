@@ -41,26 +41,31 @@ def single_run_with_viz(config):
     num_checkpoints = config.get("NUM_CHECKPOINTS", 0)
     print(f"[RUNDBG] NUM_CHECKPOINTS = {num_checkpoints}")
 
-    # 이름 구성
+    # 이름 구성: 모델/레이아웃 정보는 항상 준비하고, CLI에서 wandb.name을 넘기면 이를 우선 사용 (예: rnn-sp-uc)
     model_name = config["model"]["TYPE"]
     layout_name = config["env"]["ENV_KWARGS"]["layout"]
     agent_view_size = config["env"]["ENV_KWARGS"].get("agent_view_size", None)
     avs_str = f"avs-{agent_view_size}" if agent_view_size is not None else "avs-full"
-    
-    # suffix 결정: EXP에서 추출 (예: rnn-sp -> sp)
-    exp = config.get("EXP", "")
-    if "-" in exp:
-        suffix = exp.split("-")[-1]
+
+    cli_run_name = config.get("wandb", {}).get("name")
+    if cli_run_name:
+        run_name = cli_run_name
     else:
-        # fallback
-        if model_name == "RNN":
-            suffix = "sp"
-        elif model_name == "CNN":
-            suffix = "sa" if "NUM_ITERATIONS" in config else "sp"
+
+        # suffix 결정: EXP에서 추출 (예: rnn-sp -> sp)
+        exp = config.get("EXP", "")
+        if "-" in exp:
+            suffix = exp.split("-")[-1]
         else:
-            suffix = "sp"
-    
-    run_name = f"{suffix}_{layout_name}_{model_name.lower()}_{avs_str}"
+            # fallback
+            if model_name == "RNN":
+                suffix = "sp"
+            elif model_name == "CNN":
+                suffix = "sa" if "NUM_ITERATIONS" in config else "sp"
+            else:
+                suffix = "sp"
+
+        run_name = f"{suffix}_{layout_name}_{model_name.lower()}_{avs_str}"
     if "FCP" in config:
         population_dir = Path(config["FCP"])
         run_name = f"fcp_{population_dir.name}_seed_{config['SEED']}"

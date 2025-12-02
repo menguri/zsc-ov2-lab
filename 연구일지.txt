@@ -28,3 +28,37 @@ rm -rf ~/.jax_cache
     - 코드 변경 후: 캐시 클리어 후 재실행
     - 새 세션 시작 시: 캐시 클리어로 깨끗한 상태 유지
     - 프로덕션: 캐시를 유지하지만, 개발 중에는 적극적으로 클리어
+
+
+============================================================
+[Nvidia-smi 명령어]
+[1] 실행 중인 Python 프로세스 찾기
+
+ps aux | grep python
+ps aux | grep "[p]ython"
+ps aux | grep visualize_ppo.py
+ps aux | grep main.py
+
+[2] PID만 확인하기
+
+pgrep -f python
+pgrep -f visualize_ppo.py
+pgrep -f overcooked_v2_experiments/ppo/main.py
+
+[3] 프로세스 종료
+
+kill PID
+kill -9 PID # 강제 종료
+kill -9 PID1 PID2 # 여러 개 동시 종료
+
+[4] 특정 작업 전체 종료
+
+pkill -f python
+pkill -f visualize_ppo.py
+pkill -f overcooked_v2_experiments/ppo/main.py
+
+[5] GPU에서 실행 중인 Python 확인
+
+nvidia-smi
+sudo kill -9 PID 
+============================================================
