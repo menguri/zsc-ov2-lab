@@ -1,0 +1,7 @@
+# @package _global_
+confidence_trigger:
+  enabled: false
+  mode: under
+  entropy_threshold: 0.8
+  cooldown_steps: 5
+  target: partner

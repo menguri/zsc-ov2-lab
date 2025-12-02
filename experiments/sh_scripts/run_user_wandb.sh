@@ -145,6 +145,10 @@ ENV_DEVICE=""                 # env를 CPU/GPU 어디에 둘지: cpu|gpu (기본
 CAST_OBS_BF16="0"             # 관측을 bf16으로 캐스팅하여 메모리 절감
 MODEL_NUM_ENVS_OVERRIDE=""    # model.NUM_ENVS override
 MODEL_NUM_STEPS_OVERRIDE=""   # model.NUM_STEPS override
+CONF_PROFILE=""
+CONF_THRESHOLD=""
+CONF_COOLDOWN=""
+CONF_TARGET=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -167,6 +171,10 @@ while [[ $# -gt 0 ]]; do
   --panic)      PANIC_ENABLED=1; shift 1;;
   --panic-start) PANIC_START_STEP="$2"; shift 2;;
   --panic-duration) PANIC_DURATION="$2"; shift 2;;
+    --conf-profile) CONF_PROFILE="$2"; shift 2;;
+    --conf-threshold) CONF_THRESHOLD="$2"; shift 2;;
+    --conf-steps) CONF_COOLDOWN="$2"; shift 2;;
+    --conf-target) CONF_TARGET="$2"; shift 2;;
     --mem-frac)   XLA_PYTHON_CLIENT_MEM_FRACTION="$2"; shift 2;;
     --fcp-device) FCP_DEVICE="$2"; shift 2 ;;
     --)           shift; break;;
@@ -182,6 +190,16 @@ export WANDB_ENTITY
 # ==============================================================================
 
 RUN_NAME="${EXPERIMENT}"
+CONF_PROFILE_PRETTY=""
+if [[ -n "$CONF_PROFILE" ]]; then
+  CONF_PROFILE_PRETTY=${CONF_PROFILE//_/-}
+  # EXPERIMENT가 *-sp라면 suffix를 교체 (예: rnn-sp -> rnn-sp-uc)
+  if [[ "$EXPERIMENT" == *"-sp" ]]; then
+    RUN_NAME="${EXPERIMENT%-sp}-${CONF_PROFILE_PRETTY}"
+  else
+    RUN_NAME="${EXPERIMENT}-${CONF_PROFILE_PRETTY}"
+  fi
+fi
 
 echo "==============================================================="
 echo "  Run Name     : $RUN_NAME"
@@ -221,6 +239,10 @@ fi
 [[ "$CAST_OBS_BF16" == "1" ]]      && echo "  Obs DType    : bfloat16 (CAST_OBS_BF16)"
 [[ -n "$MODEL_NUM_ENVS_OVERRIDE" ]]   && echo "  NUM_ENVS     : $MODEL_NUM_ENVS_OVERRIDE (override)"
 [[ -n "$MODEL_NUM_STEPS_OVERRIDE" ]] && echo "  NUM_STEPS    : $MODEL_NUM_STEPS_OVERRIDE (override)"
+[[ -n "$CONF_PROFILE" ]]             && echo "  Confidence   : profile=$CONF_PROFILE_PRETTY ($CONF_PROFILE)"
+[[ -n "$CONF_THRESHOLD" ]]           && echo "  ConfThresh   : $CONF_THRESHOLD"
+[[ -n "$CONF_COOLDOWN" ]]            && echo "  ConfCooldown : $CONF_COOLDOWN"
+[[ -n "$CONF_TARGET" ]]              && echo "  ConfTarget   : $CONF_TARGET"
 
 echo "==============================================================="
 
@@ -269,6 +291,9 @@ fi
 
 # 1) 기본 태그 리스트 구성
 RAW_TAGS=("${EXPERIMENT}" "${ENV_GROUP}" "${LAYOUT}" "${ITERATIONS_OVERRIDE}")
+if [[ -n "$CONF_PROFILE_PRETTY" ]]; then
+  RAW_TAGS+=("${CONF_PROFILE_PRETTY}")
+fi
 
 # 2) --tags "a,b c" 같이 들어온 사용자 태그 파싱 (콤마/스페이스 모두 구분자)
 if [[ -n "$TAGS" ]]; then
@@ -348,6 +373,18 @@ if [[ -n "$MODEL_NUM_ENVS_OVERRIDE" ]]; then
 fi
 if [[ -n "$MODEL_NUM_STEPS_OVERRIDE" ]]; then
   PY_ARGS+=("model.NUM_STEPS=${MODEL_NUM_STEPS_OVERRIDE}")
+fi
+if [[ -n "$CONF_PROFILE" ]]; then
+  PY_ARGS+=("confidence=${CONF_PROFILE}")
+fi
+if [[ -n "$CONF_THRESHOLD" ]]; then
+  PY_ARGS+=("confidence_trigger.entropy_threshold=${CONF_THRESHOLD}")
+fi
+if [[ -n "$CONF_COOLDOWN" ]]; then
+  PY_ARGS+=("confidence_trigger.cooldown_steps=${CONF_COOLDOWN}")
+fi
+if [[ -n "$CONF_TARGET" ]]; then
+  PY_ARGS+=("confidence_trigger.target=${CONF_TARGET}")
 fi
 
 # Panic overrides appended if enabled (Hydra keys defined in base.yaml)
