@@ -3,5 +3,6 @@ confidence_trigger:
   enabled: true
   mode: under
   entropy_threshold: 0.7
-  cooldown_steps: 5
+  cooldown_steps: 1
   target: partner
+  n_threshold: 100

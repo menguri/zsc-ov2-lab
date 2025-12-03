@@ -63,6 +63,7 @@ def make_train(
 
     confidence_config = config.get("confidence_trigger", {})
     use_confidence_trigger = bool(confidence_config.get("enabled", False))
+    print(f"trigger : {use_confidence_trigger}")
 
     # Optional device selection for environment to mitigate GPU OOM.
     # Usage via Hydra override: +ENV_DEVICE=cpu  (default: gpu / auto)
@@ -189,11 +190,14 @@ def make_train(
     confidence_threshold = float(confidence_config.get("entropy_threshold", 0.8))
     confidence_cooldown_steps = int(confidence_config.get("cooldown_steps", 5))
     confidence_target = str(confidence_config.get("target", "partner")).lower()
+    n_threshold = int(confidence_config.get("n_threshold", float('inf')))
     cooldown_value = jnp.array(confidence_cooldown_steps, dtype=jnp.int32)
 
     # NUM_ACTORS = (env.num_agents * NUM_ENVS)이므로, 각 슬롯이 어떤 에이전트인지 구분하기 위해
     # 반복되는 인덱스 벡터를 만들어 ego/partner 마스크를 구성한다.
-    actor_indices = jnp.tile(
+    # batchify 결과는 Agent Major 순서 ([Ag0_Env0, ..., Ag0_EnvN, Ag1_Env0, ...])이므로
+    # repeat를 사용하여 [0, 0, ..., 1, 1, ...] 형태로 만들어야 한다.
+    actor_indices = jnp.repeat(
         jnp.arange(env.num_agents, dtype=jnp.int32), model_config["NUM_ENVS"]
     )
     ego_actor_mask = actor_indices == 0
@@ -380,6 +384,7 @@ def make_train(
                 # jax.debug.print("check5 {x}", x=hstate.flatten()[0])
 
                 num_action_choices = pi.logits.shape[-1]
+                # policy 정규화 진행해야 하나? => 이미 함수 안에서 되어 있음.
                 action = pi.sample(seed=_rng)
                 log_prob = pi.log_prob(action)
                 # policy_action(action)과 환경에 전달할 action을 분리해서 관리한다.
@@ -404,11 +409,13 @@ def make_train(
                     else:
                         trigger_mask = policy_entropy < confidence_threshold
 
-                    # 3) 대상 에이전트 + 현재 카운터가 0인 슬롯에만 트리거 허용
+                    # 3) 대상 에이전트 + 현재 카운터가 0인 슬롯 + 에피소드별 트리거 횟수 제한에만 트리거 허용
+                    confidence_episode_counts_per_actor = jnp.tile(confidence_episode_counts, env.num_agents)
                     trigger_mask = (
                         trigger_mask
                         & confidence_target_mask
                         & (confidence_counters == 0)
+                        & (confidence_episode_counts_per_actor < n_threshold)
                     )
 
                     # 4) 트리거된 슬롯은 cooldown_steps 값으로 카운터를 세팅
@@ -421,9 +428,10 @@ def make_train(
 
                     # 레이아웃마다 NUM_ENVS * num_agents 순서로 펼쳐져 있으므로, env 단위로 reshape하여
                     # 이번 스텝에서 새롭게 발동한 trigger 횟수를 episode 누적 버퍼에 추가한다.
+                    # trigger_mask: (num_agents * num_envs,) -> reshape to (num_agents, num_envs) -> sum over agents
                     trigger_events_by_env = trigger_mask.reshape(
-                        (model_config["NUM_ENVS"], env.num_agents)
-                    ).sum(axis=1)
+                        (env.num_agents, model_config["NUM_ENVS"])
+                    ).sum(axis=0)
                     confidence_episode_counts = confidence_episode_counts + trigger_events_by_env.astype(
                         jnp.float32
                     )

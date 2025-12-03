@@ -149,6 +149,7 @@ CONF_PROFILE=""
 CONF_THRESHOLD=""
 CONF_COOLDOWN=""
 CONF_TARGET=""
+CONF_N_THRESHOLD=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -175,6 +176,7 @@ while [[ $# -gt 0 ]]; do
     --conf-threshold) CONF_THRESHOLD="$2"; shift 2;;
     --conf-steps) CONF_COOLDOWN="$2"; shift 2;;
     --conf-target) CONF_TARGET="$2"; shift 2;;
+    --conf-n-threshold) CONF_N_THRESHOLD="$2"; shift 2;;
     --mem-frac)   XLA_PYTHON_CLIENT_MEM_FRACTION="$2"; shift 2;;
     --fcp-device) FCP_DEVICE="$2"; shift 2 ;;
     --)           shift; break;;
@@ -376,6 +378,10 @@ if [[ -n "$MODEL_NUM_STEPS_OVERRIDE" ]]; then
 fi
 if [[ -n "$CONF_PROFILE" ]]; then
   PY_ARGS+=("confidence=${CONF_PROFILE}")
+  # CONF_PROFILE이 지정되면 confidence_trigger.enabled를 강제로 true로 설정
+  PY_ARGS+=("confidence_trigger.enabled=true")
+  # utils.py에서 suffix 생성을 위해 프로필 이름 전달
+  PY_ARGS+=("+CONF_NAME=${CONF_PROFILE}")
 fi
 if [[ -n "$CONF_THRESHOLD" ]]; then
   PY_ARGS+=("confidence_trigger.entropy_threshold=${CONF_THRESHOLD}")
@@ -385,6 +391,9 @@ if [[ -n "$CONF_COOLDOWN" ]]; then
 fi
 if [[ -n "$CONF_TARGET" ]]; then
   PY_ARGS+=("confidence_trigger.target=${CONF_TARGET}")
+fi
+if [[ -n "$CONF_N_THRESHOLD" ]]; then
+  PY_ARGS+=("confidence_trigger.n_threshold=${CONF_N_THRESHOLD}")
 fi
 
 # Panic overrides appended if enabled (Hydra keys defined in base.yaml)
