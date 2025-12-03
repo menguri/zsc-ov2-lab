@@ -59,7 +59,7 @@ def state_sample_run(config):
     layout_name = config["env"]["ENV_KWARGS"]["layout"]
     agent_view_size = config["env"]["ENV_KWARGS"].get("agent_view_size", None)
     avs_str = f"avs-{agent_view_size}" if agent_view_size is not None else "avs-full"
-    run_name = f"ippo_{model_name}_ov2_{layout_name}_{avs_str}"
+    run_name = f"sa_{layout_name}_{model_name}_{avs_str}"
 
     num_runs = num_seeds
 
