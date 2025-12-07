@@ -1,0 +1,81 @@
+#!/bin/bash
+
+# Change to script directory
+cd "$(dirname "$0")" || exit 1
+
+# ==============================================================================
+# E3T Experiment Factory Script
+# Runs E3T experiments sequentially on different layouts.
+# ==============================================================================
+
+# Common Configuration
+EXP="rnn-e3t"
+ENV_DEVICE="cpu"
+NENVS=128
+NSTEPS=128
+
+# E3T Specific Settings
+EPSILON=0.5
+USE_PM=True
+PRED_COEF=1.0
+
+# Function to run experiment
+run_e3t() {
+    local gpus=$1
+    local env=$2
+    local layout=$3
+    
+    echo "================================================================================"
+    echo "STARTING E3T EXPERIMENT"
+    echo "ENV: $env, LAYOUT: $layout"
+    echo "GPUS: $gpus"
+    echo "================================================================================"
+    
+    local cmd="./run_user_wandb.sh \
+        --gpus $gpus \
+        --env $env \
+        --exp $EXP \
+        --env-device $ENV_DEVICE \
+        --nenvs $NENVS \
+        --nsteps $NSTEPS \
+        --e3t-epsilon $EPSILON \
+        USE_PARTNER_MODELING=$USE_PM \
+        PRED_LOSS_COEF=$PRED_COEF"
+        
+    if [ -n "$layout" ]; then
+        cmd="$cmd --layout $layout"
+    fi
+    
+    echo "Executing: $cmd"
+    $cmd
+    
+    echo "================================================================================"
+    echo "FINISHED E3T EXPERIMENT"
+    echo "================================================================================"
+    echo ""
+}
+
+# ==============================================================================
+# Execution List (Uncomment lines to run)
+# ==============================================================================
+
+# 1. Grounded Coord Simple
+run_e3t "0,1,2,3,4" "grounded_coord_simple" ""
+
+# # 2. Grounded Coord Ring
+run_e3t "0,1,2,3,4" "grounded_coord_ring" ""
+
+# # 3. Demo Cook Simple
+run_e3t "0,1,2,3,4" "demo_cook_simple" ""
+
+# # 4. Demo Cook Wide
+run_e3t "0,1,2,3,4" "demo_cook_wide" ""
+
+# # 5. Test Time Simple
+run_e3t "0,1,2,3,4" "test_time_simple" ""
+
+# # 6. Test Time Wide
+run_e3t "0,1,2,3,4" "test_time_wide" ""
+
+# 5. Cramped Room (Original)
+run_e3t "0,1,2,3,4" "original" "cramped_room"

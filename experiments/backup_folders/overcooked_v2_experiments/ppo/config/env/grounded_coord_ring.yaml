@@ -1,7 +1,0 @@
-"ENV_NAME": "overcooked_v2"
-"ENV_KWARGS": 
-  "layout": "grounded_coord_ring"
-  "agent_view_size": 2
-  "negative_rewards": True
-  "random_agent_positions": True
-  "sample_recipe_on_delivery": True

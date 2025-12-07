@@ -1,7 +1,0 @@
-defaults:
-  - _self_
-  - layouts: cramped_room
-
-"SEED": 30
-"NUM_SEEDS": 10
-"SPLIT": "train"
