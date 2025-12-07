@@ -48,7 +48,8 @@ cd "$(dirname "$0")" || exit 1
 # --------------------------------------------------------------------
 # demo_cook_wide — 고정 레이아웃
 # --------------------------------------------------------------------
-./run_user_wandb.sh --gpus 0,1 --env demo_cook_wide --exp rnn-sp --env-device cpu --nenvs 256 --nsteps 256
+# ./run_user_wandb.sh --gpus 0,1 --env demo_cook_wide --exp rnn-sp --env-device cpu --nenvs 256 --nsteps 256
+./run_user_wandb.sh --gpus 0,1 --env demo_cook_wide --exp rnn-e3t --env-device cpu --nenvs 256 --nsteps 256
 # ./run_user_wandb.sh --gpus 3 --env demo_cook_wide --exp rnn-sa --iterations 10 --env-device cpu --nenvs 256 --nsteps 256
 # ./run_user_wandb.sh --gpus 3 --env demo_cook_wide --exp rnn-op --env-device cpu --nenvs 256 --nsteps 256
 # ./run_user_wandb.sh --gpus 0 --env demo_cook_wide --exp rnn-fcp --fcp fcp_populations/demo_cook_wide --env-device cpu --nenvs 256 --nsteps 256 --fcp-device "$FCP_DEVICE"

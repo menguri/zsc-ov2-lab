@@ -3,10 +3,12 @@ from typing import Dict, Sequence
 import jax
 import jax.numpy as jnp
 import flax.linen as nn
+from flax.linen import remat
 import distrax
 from flax.linen.initializers import constant, orthogonal
 from .abstract import ActorCriticBase
 from .common import CNN, MLP
+from .e3t import PartnerPredictionModule
 
 
 class ScannedRNN(nn.Module):
@@ -49,8 +51,12 @@ class ScannedRNN(nn.Module):
 class ActorCriticRNN(ActorCriticBase):
 
     @nn.compact
-    def __call__(self, hidden, x, train=False):
+    def __call__(self, hidden, x, train=False, partner_prediction=None, obs_history=None, act_history=None):
         obs, dones = x
+
+        # E3T Initialization Helper: Ensure PartnerPredictionModule parameters are initialized
+        if obs_history is not None and act_history is not None:
+            self.predict_partner(obs_history, act_history)
 
         print("cnn shapes", hidden.shape, obs.shape, dones.shape)
 
@@ -81,6 +87,13 @@ class ActorCriticRNN(ActorCriticBase):
         embedding = jax.vmap(embed_model)(embedding)
 
         embedding = nn.LayerNorm()(embedding)
+
+        # E3T Conditioning (Layer 4)
+        # partner_prediction이 제공되면 현재 상태 특징(embedding)과 연결합니다.
+        if partner_prediction is not None:
+            # partner_prediction: (Time, Batch, 6)
+            # embedding: (Time, Batch, Hidden)
+            embedding = jnp.concatenate([embedding, partner_prediction], axis=-1)
 
         # embedding_1_mlp = MLP(
         #     hidden_size=self.config["FC_DIM_SIZE"],
@@ -148,3 +161,15 @@ class ActorCriticRNN(ActorCriticBase):
         # )
 
         return hidden, pi, jnp.squeeze(critic, axis=-1)
+
+    @nn.compact
+    def predict_partner(self, obs_history, act_history):
+        """
+        E3T Partner Prediction
+        Args:
+            obs_history: (Batch, T, H, W, C)
+            act_history: (Batch, T)
+        Returns:
+            partner_prediction: (Batch, ActionDim)
+        """
+        return PartnerPredictionModule(action_dim=self.action_dim)(obs_history, act_history)

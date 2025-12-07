@@ -40,6 +40,10 @@ class Transition(NamedTuple):
     obs: jnp.ndarray
     info: jnp.ndarray
     train_mask: jnp.ndarray
+    obs_history: jnp.ndarray
+    act_history: jnp.ndarray
+    partner_action: jnp.ndarray
+    is_ego: jnp.ndarray
 
 
 def batchify(x: dict, agent_list, num_actors):
@@ -61,6 +65,11 @@ def make_train(
     env_config = config["env"]
     model_config = config["model"]
 
+    # E3T 설정 로드
+    alg_name = config.get("ALG_NAME", "SP")
+    e3t_epsilon = config.get("E3T_EPSILON", 0.05)
+    use_partner_modeling = config.get("USE_PARTNER_MODELING", True)
+
     confidence_config = config.get("confidence_trigger", {})
     use_confidence_trigger = bool(confidence_config.get("enabled", False))
     print(f"trigger : {use_confidence_trigger}")
@@ -77,6 +86,8 @@ def make_train(
             env = jaxmarl.make(env_config["ENV_NAME"], **env_config["ENV_KWARGS"])
     else:
         env = jaxmarl.make(env_config["ENV_NAME"], **env_config["ENV_KWARGS"])
+
+    ACTION_DIM = env.action_space(env.agents[0]).n
 
     model_config["NUM_ACTORS"] = env.num_agents * model_config["NUM_ENVS"]
     model_config["NUM_UPDATES"] = (
@@ -190,7 +201,7 @@ def make_train(
     confidence_threshold = float(confidence_config.get("entropy_threshold", 0.8))
     confidence_cooldown_steps = int(confidence_config.get("cooldown_steps", 5))
     confidence_target = str(confidence_config.get("target", "partner")).lower()
-    n_threshold = int(confidence_config.get("n_threshold", float('inf')))
+    n_threshold = int(confidence_config.get("n_threshold", 1.0))
     cooldown_value = jnp.array(confidence_cooldown_steps, dtype=jnp.int32)
 
     # NUM_ACTORS = (env.num_agents * NUM_ENVS)이므로, 각 슬롯이 어떤 에이전트인지 구분하기 위해
@@ -255,7 +266,28 @@ def make_train(
 
         print("init_x", init_x[0].shape, init_x[1].shape)
 
-        network_params = network.init(_rng, init_hstate, init_x)
+        # E3T: Prepare dummy inputs for Single Initialization
+        dummy_partner_prediction = None
+        dummy_obs_hist = None
+        dummy_act_hist = None
+        
+        if alg_name == "E3T" and use_partner_modeling:
+             # Shape: (Time=1, Batch=NUM_ENVS, ActionDim=6)
+             dummy_partner_prediction = jnp.zeros((1, model_config["NUM_ENVS"], ACTION_DIM))
+             dummy_obs_hist = jnp.zeros((1, 5, *env.observation_space().shape))
+             dummy_act_hist = jnp.zeros((1, 5), dtype=jnp.int32)
+
+        # Single Init: Initialize all parameters at once to avoid collision
+        # 단일 초기화: 파라미터 충돌 방지를 위해 모든 모듈을 한 번에 초기화
+        network_params = network.init(
+            _rng, 
+            init_hstate, 
+            init_x, 
+            partner_prediction=dummy_partner_prediction,
+            obs_history=dummy_obs_hist,
+            act_history=dummy_act_hist
+        )
+
         if model_config["ANNEAL_LR"]:
             tx = optax.chain(
                 optax.clip_by_global_norm(model_config["MAX_GRAD_NORM"]),
@@ -339,6 +371,9 @@ def make_train(
                 initial_fcp_pop_agent_idxs,
                 confidence_counters,
                 confidence_episode_counts,
+                obs_history,
+                act_history,
+                last_partner_action,
                 rng,
             ) = runner_state
 
@@ -358,6 +393,9 @@ def make_train(
                     fcp_pop_agent_idxs,
                     confidence_counters,
                     confidence_episode_counts,
+                    obs_history,
+                    act_history,
+                    last_partner_action,
                     completed_trigger_sum,
                     completed_episode_count,
                     rng,
@@ -374,12 +412,65 @@ def make_train(
                 if cast_obs_bf16:
                     obs_batch = obs_batch.astype(jnp.bfloat16)
 
+                # --------------------------------------------------------------
+                # E3T History Update & Partner Prediction
+                # --------------------------------------------------------------
+                # 1. History Update
+                if alg_name == "E3T":
+                    # last_done이 True이면 히스토리 초기화 (Masking)
+                    reset_mask = (1 - last_done.astype(jnp.int32))[:, None]
+                    obs_history = obs_history * reset_mask[..., None, None, None].astype(jnp.float32)
+                    act_history = act_history * reset_mask
+                    
+                    # Shift (Left)
+                    obs_history = jnp.roll(obs_history, shift=-1, axis=1)
+                    act_history = jnp.roll(act_history, shift=-1, axis=1)
+                    
+                    # Update last element
+                    # obs_history[-1] <- current obs (obs_batch)
+                    obs_history = obs_history.at[:, -1].set(obs_batch)
+                    
+                    # act_history[-1] <- last partner action
+                    # 에피소드 시작 시점(last_done=True)이면 0으로 처리
+                    # last_partner_action은 이전 스텝의 '내' 행동이므로, 파트너의 행동을 얻기 위해 swap해야 함
+                    # (NUM_ACTORS = 2 * NUM_ENVS 가정)
+                    prev_partner_action = jnp.roll(last_partner_action, shift=model_config["NUM_ENVS"], axis=0)
+                    last_partner_action_masked = jnp.where(last_done, 0, prev_partner_action)
+                    act_history = act_history.at[:, -1].set(last_partner_action_masked)
+                
+                # 2. Partner Prediction
+                partner_prediction = None
+                if alg_name == "E3T" and use_partner_modeling:
+                    # (1) 실제 파트너 예측 (Ego용)
+                    real_prediction = network.apply(train_state.params, obs_history, act_history, method='predict_partner')
+                    
+                    # (2) 무작위 행동 임베딩 (Partner용)
+                    # 파트너는 Ego를 예측하지 않고, 무작위 행동(또는 노이즈)을 조건으로 받아 자신의 정책을 수행한다고 가정
+                    rng, rng_rand_input = jax.random.split(rng)
+                    rand_act_input = jax.random.randint(rng_rand_input, (model_config["NUM_ACTORS"],), 0, ACTION_DIM)
+                    rand_pred_input = jax.nn.one_hot(rand_act_input, num_classes=ACTION_DIM)
+                    
+                    # L2 Normalize (PartnerPredictionModule 출력 스케일과 맞춤)
+                    norm = jnp.linalg.norm(rand_pred_input, axis=-1, keepdims=True)
+                    rand_pred_input = rand_pred_input / (norm + 1e-6)
+                    
+                    # (3) Ego vs Partner 구분하여 입력 선택
+                    # Ego(Agent 0)는 예측값 사용, Partner(Agent 1)는 무작위 입력 사용
+                    is_ego = (actor_indices == 0)
+                    
+                    # real_prediction: (Batch, 6)
+                    # rand_pred_input: (Batch, 6)
+                    combined_prediction = jnp.where(is_ego[:, None], real_prediction, rand_pred_input)
+                    
+                    # (Batch, ActionDim) -> (1, Batch, ActionDim) for Actor input
+                    partner_prediction = combined_prediction[jnp.newaxis, ...]
+
                 ac_in = (
                     obs_batch[np.newaxis, :],
                     last_done[np.newaxis, :],
                 )
 
-                hstate, pi, value = network.apply(train_state.params, hstate, ac_in)
+                hstate, pi, value = network.apply(train_state.params, hstate, ac_in, partner_prediction=partner_prediction)
 
                 # jax.debug.print("check5 {x}", x=hstate.flatten()[0])
 
@@ -520,6 +611,45 @@ def make_train(
                         random_actions,
                     )
 
+                # E3T 알고리즘: 파트너 정책 혼합 (Mixture Partner Policy)
+                # [E3T] 파트너 행동 변경 로직 (Mixture Policy)
+                # 파트너는 (1-epsilon) 확률로 자신의 정책을 따르고, epsilon 확률로 무작위 행동을 수행함
+                if alg_name == "E3T":
+                    # 1. rng 분리 (혼합 정책용)
+                    rng, rng_mix = jax.random.split(rng)
+                    
+                    # 2. 베르누이 마스크 생성 (p=E3T_EPSILON)
+                    # True일 경우 무작위 행동을 선택
+                    mix_mask = jax.random.bernoulli(rng_mix, p=e3t_epsilon, shape=(model_config["NUM_ACTORS"],))
+                    
+                    # [중요] 파트너 에이전트(partner_actor_mask)인 경우에만 무작위 행동 혼합을 적용
+                    # Ego 에이전트는 자신의 정책을 그대로 따름
+                    mix_mask = mix_mask & partner_actor_mask
+                    
+                    # 3. 완전 무작위 행동 샘플링
+                    rng, rng_rand = jax.random.split(rng)
+                    # Fix: Ensure shape is (NUM_ACTORS,) not (1, NUM_ACTORS)
+                    rand_action = jax.random.randint(
+                        rng_rand,
+                        (model_config["NUM_ACTORS"],),
+                        0,
+                        num_action_choices,
+                        dtype=action_for_env.dtype,
+                    )
+                    
+                    # 4. 실제 파트너 행동 결정
+                    # 마스크가 True이면 무작위 행동, False이면 기존 정책 행동(ego_policy_action) 사용
+                    actual_partner_action = jax.lax.select(mix_mask, rand_action, action_for_env.squeeze())
+                    
+                    # 5. 환경에 전달할 행동 업데이트
+                    # Fix: Force int32 type and squeeze if necessary
+                    action_for_env = actual_partner_action.astype(jnp.int32)
+                    if len(action_for_env.shape) > 1:
+                        action_for_env = action_for_env.squeeze()
+
+                # Update last_partner_action for next step history
+                last_partner_action = action_for_env
+
                 env_act = unbatchify(
                     action_for_env,
                     env.agents,
@@ -611,6 +741,10 @@ def make_train(
                 else:
                     new_fcp_pop_agent_idxs = fcp_pop_agent_idxs
 
+                # E3T: 현재 스텝의 파트너 행동 (Target Label)
+                # action_for_env는 현재 스텝의 '내' 행동이므로, 파트너의 행동을 얻기 위해 swap
+                current_partner_action = jnp.roll(action_for_env, shift=model_config["NUM_ENVS"], axis=0)
+
                 transition = Transition(
                     jnp.tile(done["__all__"], env.num_agents),
                     action.squeeze(),
@@ -620,6 +754,10 @@ def make_train(
                     obs_batch,
                     info,
                     action_pick_mask,
+                    obs_history,
+                    act_history,
+                    current_partner_action,
+                    is_ego,
                 )
 
                 if use_confidence_trigger:
@@ -666,6 +804,9 @@ def make_train(
                     new_fcp_pop_agent_idxs,
                     confidence_counters,
                     confidence_episode_counts,
+                    obs_history,
+                    act_history,
+                    last_partner_action,
                     completed_trigger_sum,
                     completed_episode_count,
                     rng,
@@ -684,6 +825,9 @@ def make_train(
                 initial_fcp_pop_agent_idxs,
                 confidence_counters,
                 confidence_episode_counts,
+                obs_history,
+                act_history,
+                last_partner_action,
                 jnp.zeros((), dtype=jnp.float32),  # completed trigger sum (per update)
                 jnp.zeros((), dtype=jnp.float32),  # completed episode count (per update)
                 rng,
@@ -703,6 +847,9 @@ def make_train(
                 next_fcp_pop_agent_idxs,
                 confidence_counters,
                 confidence_episode_counts,
+                obs_history,
+                act_history,
+                last_partner_action,
                 completed_trigger_sum,
                 completed_episode_count,
                 rng,
@@ -722,8 +869,29 @@ def make_train(
                 last_obs_batch[np.newaxis, :],
                 last_done[np.newaxis, :],
             )
+
+            # [E3T] Calculate partner_prediction for last_val (Value Function)
+            partner_prediction = None
+            if alg_name == "E3T" and use_partner_modeling:
+                # 1. Predict
+                pred_logits = network.apply(train_state.params, obs_history, act_history, method='predict_partner')
+                
+                # 2. Random Input for Partner
+                rng, rng_rand_input = jax.random.split(rng)
+                rand_act_input = jax.random.randint(rng_rand_input, (model_config["NUM_ACTORS"],), 0, ACTION_DIM)
+                rand_pred_input = jax.nn.one_hot(rand_act_input, num_classes=ACTION_DIM)
+                norm = jnp.linalg.norm(rand_pred_input, axis=-1, keepdims=True)
+                rand_pred_input = rand_pred_input / (norm + 1e-6)
+                
+                # 3. Combine
+                is_ego = (actor_indices == 0)
+                combined_prediction = jnp.where(is_ego[:, None], pred_logits, rand_pred_input)
+                
+                # 4. Add Time Dimension (1, Batch, ActionDim)
+                partner_prediction = combined_prediction[jnp.newaxis, ...]
+
             _, _, last_val = network.apply(
-                train_state.params, next_initial_hstate, ac_in
+                train_state.params, next_initial_hstate, ac_in, partner_prediction=partner_prediction
             )
 
             last_val = last_val.squeeze()
@@ -774,11 +942,59 @@ def make_train(
                         if population is not None:
                             train_mask = jax.lax.stop_gradient(traj_batch.train_mask)
 
+                        # --------------------------------------------------------------
+                        # E3T Partner Prediction Loss & Gradient Blocking
+                        # --------------------------------------------------------------
+                        pred_loss = 0.0
+                        pred_accuracy = 0.0
+                        partner_prediction = None
+
+                        if alg_name == "E3T" and use_partner_modeling:
+                            # 1. Forward Pass for Prediction
+                            # traj_batch.obs_history: (Time, Batch, 5, H, W, C)
+                            # traj_batch.act_history: (Time, Batch, 5)
+                            
+                            # Flatten Time and Batch dimensions for network input
+                            T, B = traj_batch.obs_history.shape[:2]
+                            obs_hist_flat = traj_batch.obs_history.reshape(T * B, *traj_batch.obs_history.shape[2:])
+                            act_hist_flat = traj_batch.act_history.reshape(T * B, *traj_batch.act_history.shape[2:])
+                            
+                            # Predict Partner Action (파트너 행동 예측)
+                            # obs_history와 act_history를 사용하여 파트너의 다음 행동을 예측합니다.
+                            pred_logits = network.apply(params, obs_hist_flat, act_hist_flat, method='predict_partner')
+                            
+                            # 2. Label Matching
+                            target_labels = traj_batch.partner_action.reshape(T * B).astype(jnp.int32)
+                            
+                            # 3. Compute Cross-Entropy Loss (예측 손실 계산)
+                            pred_loss_vec = optax.softmax_cross_entropy_with_integer_labels(logits=pred_logits, labels=target_labels)
+                            
+                            # [E3T] Masking: Only Ego agents contribute to prediction loss
+                            # Ego 에이전트만 예측 손실에 기여하도록 마스킹 (Partner는 랜덤 행동을 하므로 예측 불가/불필요)
+                            is_ego_flat = traj_batch.is_ego.reshape(T * B)
+                            pred_loss = (pred_loss_vec * is_ego_flat).sum() / (is_ego_flat.sum() + 1e-8)
+                            
+                            # Apply Coefficient
+                            pred_loss = pred_loss * config.get("PRED_LOSS_COEF", 1.0)
+                            
+                            # Calculate Accuracy
+                            pred_labels = jnp.argmax(pred_logits, axis=-1)
+                            pred_accuracy = jnp.mean(pred_labels == target_labels)
+                            
+                            # 4. Stop Gradient for Ego Policy (Actor 입력용)
+                            # Actor-Critic 네트워크에 입력으로 주기 위해 gradient를 차단합니다.
+                            # 이는 PPO 손실이 예측 네트워크를 업데이트하지 않도록 하기 위함입니다.
+                            partner_prediction_flat = jax.lax.stop_gradient(pred_logits)
+                            partner_prediction = partner_prediction_flat.reshape(T, B, -1)
+
                         # RERUN NETWORK
+                        # Actor-Critic 네트워크 재실행 (Value, Policy 계산)
+                        # partner_prediction을 함께 전달하여 shape mismatch (134 vs 128) 해결
                         _, pi, value = network.apply(
                             params,
                             hstate,
                             (traj_batch.obs, traj_batch.done),
+                            partner_prediction=partner_prediction
                         )
 
                         print("value shape", value.shape)
@@ -840,9 +1056,10 @@ def make_train(
                             loss_actor
                             + model_config["VF_COEF"] * value_loss
                             - model_config["ENT_COEF"] * entropy
+                            + pred_loss
                         )
 
-                        return total_loss, (value_loss, loss_actor, entropy, ratio)
+                        return total_loss, (value_loss, loss_actor, entropy, ratio, pred_loss, pred_accuracy)
 
                     def _perform_update():
                         grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
@@ -866,7 +1083,7 @@ def make_train(
 
                     def _no_op():
                         # jax.debug.print("No update")
-                        return train_state, (0.0, (0.0, 0.0, 0.0, 0.0))
+                        return train_state, (0.0, (0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
 
                     # jax.debug.print(
                     #     "train_mask {x}, {y}",
@@ -983,14 +1200,16 @@ def make_train(
 
             # 손실 함수 관련 메트릭 추출
             total_loss, aux_data = loss_info
-            value_loss, loss_actor, entropy, ratio = aux_data
+            value_loss, loss_actor, entropy, ratio, pred_loss, pred_accuracy = aux_data
 
             # PPO 학습 손실 메트릭 추가
-            metric["total_loss"] = total_loss      # 전체 손실 (actor + value + entropy)
+            metric["total_loss"] = total_loss      # 전체 손실 (actor + value + entropy + pred)
             metric["value_loss"] = value_loss      # 가치 함수(critic) MSE 손실
             metric["loss_actor"] = loss_actor      # 정책(actor) clipped surrogate 손실
             metric["entropy"] = entropy            # 정책 엔트로피 (탐험 정도)
             metric["ratio"] = ratio                # PPO ratio (new_prob / old_prob)
+            metric["pred_loss"] = pred_loss        # 파트너 행동 예측 손실
+            metric["pred_accuracy"] = pred_accuracy # 파트너 행동 예측 정확도
 
             # 모든 메트릭 값을 배치/스텝 차원에 대해 평균 계산 (스칼라로 축약)
             metric = jax.tree_util.tree_map(lambda x: x.mean(), metric)
@@ -1072,6 +1291,9 @@ def make_train(
                 next_fcp_pop_agent_idxs,
                 confidence_counters,
                 confidence_episode_counts,
+                obs_history,
+                act_history,
+                last_partner_action,
                 rng,
             )
             return runner_state, metric
@@ -1112,6 +1334,11 @@ def make_train(
             (model_config["NUM_ENVS"],), dtype=jnp.float32
         )
 
+        # E3T History Buffers
+        initial_obs_history = jnp.zeros((model_config["NUM_ACTORS"], 5, *env.observation_space().shape))
+        initial_act_history = jnp.zeros((model_config["NUM_ACTORS"], 5), dtype=jnp.int32)
+        initial_last_partner_action = jnp.zeros((model_config["NUM_ACTORS"],), dtype=jnp.int32)
+
         runner_state = (
             train_state,
             initial_checkpoints,
@@ -1125,6 +1352,9 @@ def make_train(
             init_fcp_pop_idxs,
             initial_confidence_counters,
             initial_confidence_episode_counts,
+            initial_obs_history,
+            initial_act_history,
+            initial_last_partner_action,
             _rng,
         )
         num_update_steps = model_config["NUM_UPDATES"]

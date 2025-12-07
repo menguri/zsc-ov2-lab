@@ -25,6 +25,9 @@ set -euo pipefail
 : "${PANIC_START_STEP:=50}"    # default start step within episode
 : "${PANIC_DURATION:=30}"      # default duration (steps)
 
+# E3T (Mixture Partner Policy) defaults
+: "${E3T_EPSILON:=0.05}"       # 파트너 무작위 행동 확률
+
 # JAX 메모리 설정
 : "${XLA_PYTHON_CLIENT_PREALLOCATE:=false}"    # 메모리 선할당 방지
 : "${XLA_PYTHON_CLIENT_MEM_FRACTION:=0.7}"     # 0.0~1.0 비율 (너무 낮으면 성능 저하 가능)
@@ -177,6 +180,7 @@ while [[ $# -gt 0 ]]; do
     --conf-steps) CONF_COOLDOWN="$2"; shift 2;;
     --conf-target) CONF_TARGET="$2"; shift 2;;
     --conf-n-threshold) CONF_N_THRESHOLD="$2"; shift 2;;
+    --e3t-epsilon) E3T_EPSILON="$2"; shift 2;;
     --mem-frac)   XLA_PYTHON_CLIENT_MEM_FRACTION="$2"; shift 2;;
     --fcp-device) FCP_DEVICE="$2"; shift 2 ;;
     --)           shift; break;;
@@ -394,6 +398,11 @@ if [[ -n "$CONF_TARGET" ]]; then
 fi
 if [[ -n "$CONF_N_THRESHOLD" ]]; then
   PY_ARGS+=("confidence_trigger.n_threshold=${CONF_N_THRESHOLD}")
+fi
+
+# E3T epsilon override
+if [[ -n "$E3T_EPSILON" ]]; then
+  PY_ARGS+=("E3T_EPSILON=${E3T_EPSILON}")
 fi
 
 # Panic overrides appended if enabled (Hydra keys defined in base.yaml)

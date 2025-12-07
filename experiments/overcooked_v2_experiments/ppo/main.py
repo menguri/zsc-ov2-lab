@@ -51,21 +51,11 @@ def single_run_with_viz(config):
     if cli_run_name:
         run_name = cli_run_name
     else:
-
-        # suffix 결정: EXP에서 추출 (예: rnn-sp -> sp)
-        exp = config.get("EXP", "")
-        if "-" in exp:
-            suffix = exp.split("-")[-1]
-        else:
-            # fallback
-            if model_name == "RNN":
-                suffix = "sp"
-            elif model_name == "CNN":
-                suffix = "sa" if "NUM_ITERATIONS" in config else "sp"
-            else:
-                suffix = "sp"
-
+        # utils.py의 _infer_run_suffix 함수를 사용해서 일관성 있게 suffix 결정
+        from overcooked_v2_experiments.ppo.utils.utils import _infer_run_suffix
+        suffix = _infer_run_suffix(config)
         run_name = f"{suffix}_{layout_name}_{model_name.lower()}_{avs_str}"
+
     if "FCP" in config:
         population_dir = Path(config["FCP"])
         run_name = f"fcp_{population_dir.name}_seed_{config['SEED']}"

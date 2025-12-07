@@ -22,6 +22,10 @@ def _infer_run_suffix(config) -> str:
         else:
             suffix = model_name.lower()
 
+    # E3T 알고리즘인 경우 suffix에 e3t 추가
+    if config.get("ALG_NAME") == "E3T":
+        suffix = f"e3t"
+
     confidence_profile = config.get("CONF_NAME")
     if confidence_profile and confidence_profile != "disabled":
         confidence_pretty = confidence_profile.replace("_", "-")

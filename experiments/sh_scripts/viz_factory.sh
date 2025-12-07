@@ -39,7 +39,7 @@ echo "Starting visualization factory by environment..."
 # echo "Processing demo_cook_wide..."
 # ./run_visualize.sh --gpu 1 --dir runs/20251121-040307_ko8dwt00_demo_cook_wide_avs-2-256-op --all --num_seeds 10 --no_viz
 # ./run_visualize.sh --gpu 6 --dir runs/20251202-022944_1spz8zlx_demo_cook_wide_sp --all --num_seeds 10 --no_viz
-./run_visualize.sh --gpu 0 --dir runs/20251202-052701_bnzicry3_demo_cook_wide_fcp --all --num_seeds 10 --no_viz
+./run_visualize.sh --gpu 0 --dir runs/20251207-030556_0kj52661_demo_cook_wide_sp --all --num_seeds 10 --no_viz
 
 # # test_time_simple
 # echo "Processing test_time_simple..."
