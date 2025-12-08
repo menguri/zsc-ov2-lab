@@ -60,22 +60,34 @@ run_e3t() {
 # ==============================================================================
 
 # 1. Grounded Coord Simple
-run_e3t "0,1,2,3,4" "grounded_coord_simple" ""
+# run_e3t "0,1,2,3,4" "grounded_coord_simple" ""
 
-# # 2. Grounded Coord Ring
-run_e3t "0,1,2,3,4" "grounded_coord_ring" ""
+# # # 2. Grounded Coord Ring
+# run_e3t "0,1,2,3,4" "grounded_coord_ring" ""
 
-# # 3. Demo Cook Simple
-run_e3t "0,1,2,3,4" "demo_cook_simple" ""
+# # # 3. Demo Cook Simple
+# run_e3t "0,1,2,3,4" "demo_cook_simple" ""
 
-# # 4. Demo Cook Wide
-run_e3t "0,1,2,3,4" "demo_cook_wide" ""
+# # # 4. Demo Cook Wide
+# run_e3t "0,1,2,3,4" "demo_cook_wide" ""
 
-# # 5. Test Time Simple
-run_e3t "0,1,2,3,4" "test_time_simple" ""
+# # # 5. Test Time Simple
+# run_e3t "0,1,2,3,4" "test_time_simple" ""
 
-# # 6. Test Time Wide
-run_e3t "0,1,2,3,4" "test_time_wide" ""
+# # # 6. Test Time Wide
+# run_e3t "0,1,2,3,4" "test_time_wide" ""
 
-# 5. Cramped Room (Original)
-run_e3t "0,1,2,3,4" "original" "cramped_room"
+# # 5. Cramped Room (Original)
+# run_e3t "0,1,2,3,4" "cramped_room" ""
+
+# # 6. Asymmetric Advantages (Original)
+# run_e3t "0,1,2,3,4" "asymm_advantages" ""
+
+# 7. Coordination Ring (Original)
+run_e3t "0,1,2,3,4" "coord_ring" ""
+
+# 8. Forced Coordination (Original)
+run_e3t "0,1,2,3,4" "forced_coord" ""
+
+# 9. Counter Circuit (Original)
+run_e3t "0,1,2,3,4" "counter_circuit" ""

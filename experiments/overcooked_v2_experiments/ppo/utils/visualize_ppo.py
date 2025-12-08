@@ -130,6 +130,12 @@ def visualize_ppo_policy(
         pairing = policy_checkoints_to_policy_pairing(pairing, config)
 
         # eval_pairing이 rollout 돌리고, frame_seq/total_reward 등을 들고있는 객체 반환
+        # ALG_NAME은 config의 최상위 레벨에 위치함 (rnn-e3t.yaml 등에서 @package _global_ 사용)
+        alg_name = config.get("ALG_NAME", "PPO")
+        # 만약 alg 키 아래에 있다면 (구버전 호환)
+        if "alg" in config:
+            alg_name = config["alg"].get("ALG_NAME", alg_name)
+
         return eval_pairing(
             pairing,
             layout_name,
@@ -138,6 +144,7 @@ def visualize_ppo_policy(
             num_seeds=num_seeds,
             all_recipes=num_seeds is None,
             no_viz=no_viz,
+            algorithm=alg_name,
         )
 
     # JIT 한 번 감싸두면, 여러 policy에 대해 돌릴 때도 컴파일 한 번만 사용됨
@@ -175,14 +182,18 @@ def visualize_ppo_policy(
 
     # 6) reward summary + gif 저장
     rows = []
+    max_agents = 0
     for first_level, first_level_runs in all_params.items():
         for second_level, second_level_runs in first_level_runs.items():
             checkpoint_sum = 0.0
+            acc_sum = None
+            acc_count = 0
 
             print(f"{labels[0]}: {first_level}, {labels[1]}: {second_level}")
             for annotation, viz in second_level_runs.items():
                 frame_seq = viz.frame_seq
                 total_reward = viz.total_reward
+                pred_acc = viz.prediction_accuracy
 
                 if not no_viz:
                     viz_dir = run_base_dir / first_level / second_level
@@ -191,10 +202,33 @@ def visualize_ppo_policy(
                     imageio.mimsave(viz_filename, frame_seq, "GIF", duration=0.5)
 
                 checkpoint_sum += total_reward
-                rows.append([first_level, second_level, annotation, total_reward])
+                row = [first_level, second_level, annotation, total_reward]
+                
+                if pred_acc is not None:
+                    # pred_acc is (num_agents,)
+                    if acc_sum is None:
+                        acc_sum = jnp.zeros_like(pred_acc)
+                    acc_sum += pred_acc
+                    acc_count += 1
+                    
+                    for i in range(pred_acc.shape[0]):
+                        row.append(float(pred_acc[i]))
+                    max_agents = max(max_agents, pred_acc.shape[0])
+                
+                rows.append(row)
                 print(f"\t{annotation}:\t{total_reward}")
+            
             reward_mean = checkpoint_sum / len(second_level_runs)
             print(f"\tMean reward:\t{reward_mean}")
+            
+            mean_row = [first_level, second_level, "mean", reward_mean]
+            if acc_count > 0:
+                acc_mean = acc_sum / acc_count
+                print(f"\tMean accuracy:\t{acc_mean}")
+                for i in range(acc_mean.shape[0]):
+                    mean_row.append(float(acc_mean[i]))
+            
+            rows.append(mean_row)
 
     # 7) CSV로 요약 저장
     summery_name = "reward_summary_cross.csv" if cross else "reward_summary_sp.csv"
@@ -202,6 +236,9 @@ def visualize_ppo_policy(
     with open(summery_file, "w", newline="") as csvfile:
         writer = csv.writer(csvfile)
         fieldnames = [labels[0], labels[1], "annotation", "total_reward"]
+        for i in range(max_agents):
+            fieldnames.append(f"pred_acc_agent_{i}")
+            
         writer.writerow(fieldnames)
         for row in rows:
             writer.writerow(row)

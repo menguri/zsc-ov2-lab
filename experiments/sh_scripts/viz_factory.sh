@@ -39,7 +39,18 @@ echo "Starting visualization factory by environment..."
 # echo "Processing demo_cook_wide..."
 # ./run_visualize.sh --gpu 1 --dir runs/20251121-040307_ko8dwt00_demo_cook_wide_avs-2-256-op --all --num_seeds 10 --no_viz
 # ./run_visualize.sh --gpu 6 --dir runs/20251202-022944_1spz8zlx_demo_cook_wide_sp --all --num_seeds 10 --no_viz
-./run_visualize.sh --gpu 0 --dir runs/20251207-030556_0kj52661_demo_cook_wide_sp --all --num_seeds 10 --no_viz
+# ./run_visualize.sh --gpu 7 --dir runs/20251207-061429_k1fs7042_grounded_coord_simple_e3t --all --num_seeds 10 --no_viz
+# ./run_visualize.sh --gpu 7 --dir runs/20251207-123750_24e9nj7y_asymm_advantages_sp --all --num_seeds 10 --no_viz
+./run_visualize.sh --gpu 6 --dir runs/20251207-133048_pp9f1grh_forced_coord_sp --all --num_seeds 10 --no_viz
+./run_visualize.sh --gpu 6 --dir runs/20251207-170838_nuai4ziw_coord_ring_sp --all --num_seeds 10 --no_viz
+./run_visualize.sh --gpu 6 --dir runs/20251207-191729_n7qqckp4_forced_coord_op --all --num_seeds 10 --no_viz
+./run_visualize.sh --gpu 6 --dir runs/20251207-213355_e2yvqvf2_counter_circuit_sp --all --num_seeds 10 --no_viz
+./run_visualize.sh --gpu 6 --dir runs/20251208-005403_34k3joa3_asymm_advantages_sp --all --num_seeds 10 --no_viz
+./run_visualize.sh --gpu 6 --dir runs/20251208-014920_7z1173m6_counter_circuit_sp --all --num_seeds 10 --no_viz
+./run_visualize.sh --gpu 6 --dir runs/20251207-221747_l651zku4_asymm_advantages_e3t --all --num_seeds 10 --no_viz
+./run_visualize.sh --gpu 6 --dir runs/20251207-20251208-030348_py79cyfd_coord_ring_e3t --all --num_seeds 10 --no_viz
+./run_visualize.sh --gpu 6 --dir runs/20251208-051221_hv2sriuw_forced_coord_e3t --all --num_seeds 10 --no_viz
+./run_visualize.sh --gpu 6 --dir runs/20251208-071957_cdaeuiuj_counter_circuit_e3t --all --num_seeds 10 --no_viz
 
 # # test_time_simple
 # echo "Processing test_time_simple..."

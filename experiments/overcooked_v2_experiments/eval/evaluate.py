@@ -34,6 +34,7 @@ from .utils import get_recipe_identifier
 class PolicyVizualization:
     frame_seq: chex.Array
     total_reward: chex.Scalar
+    prediction_accuracy: chex.Array = None
 
 
 def visualize_pairing(
@@ -46,9 +47,10 @@ def visualize_pairing(
     all_recipes=False,
     no_viz=False,
     no_csv=False,
+    algorithm="PPO",
 ):
     runs = eval_pairing(
-        policies, layout_name, key, env_kwargs, num_seeds, all_recipes, no_viz
+        policies, layout_name, key, env_kwargs, num_seeds, all_recipes, no_viz, algorithm=algorithm
     )
 
     reward_sum = 0.0
@@ -56,6 +58,7 @@ def visualize_pairing(
     for annotation, viz in runs.items():
         frame_seq = viz.frame_seq
         total_reward = viz.total_reward
+        pred_acc = viz.prediction_accuracy
 
         if not no_viz:
             viz_dir = output_dir / "visualizations"
@@ -65,7 +68,14 @@ def visualize_pairing(
             imageio.mimsave(viz_filename, frame_seq, "GIF", duration=0.5)
 
         reward_sum += total_reward
-        rows.append([annotation, total_reward])
+        row = [annotation, total_reward]
+        if pred_acc is not None:
+            # pred_acc is (num_agents,)
+            # Add to row
+            for i in range(pred_acc.shape[0]):
+                row.append(float(pred_acc[i]))
+        
+        rows.append(row)
         print(f"\t{annotation}:\t{total_reward}")
     reward_mean = reward_sum / len(runs)
     print(f"\tMean reward:\t{reward_mean}")
@@ -76,6 +86,11 @@ def visualize_pairing(
         with open(summery_file, "w", newline="") as csvfile:
             writer = csv.writer(csvfile)
             fieldnames = ["annotation", "total_reward"]
+            # Add prediction accuracy columns if available
+            if rows and len(rows[0]) > 2:
+                num_agents = len(rows[0]) - 2
+                for i in range(num_agents):
+                    fieldnames.append(f"pred_acc_agent_{i}")
 
             writer.writerow(fieldnames)
 
@@ -92,6 +107,7 @@ def eval_pairing(
     num_seeds=1,
     all_recipes=False,
     no_viz=False,
+    algorithm="PPO",
 ):
     assert (
         not all_recipes and num_seeds > 1
@@ -109,7 +125,7 @@ def eval_pairing(
             _layout.possible_recipes = [recipe]
             env = OvercookedV2(layout=_layout, **env_kwargs)
 
-            rollout = get_rollout(policies, env, key)
+            rollout = get_rollout(policies, env, key, algorithm=algorithm)
 
             return rollout
 
@@ -122,7 +138,7 @@ def eval_pairing(
         env = OvercookedV2(layout=layout_name, **env_kwargs)
 
         def _rollout_seed_body(carry, key):
-            rollout = get_rollout(policies, env, key)
+            rollout = get_rollout(policies, env, key, algorithm=algorithm)
             return carry, rollout
 
         keys = jax.random.split(key, num_seeds)
@@ -158,7 +174,9 @@ def eval_pairing(
 
     return {
         annotation: PolicyVizualization(
-            frame_seq=frame_seqs[i], total_reward=rollouts.total_reward[i]
+            frame_seq=frame_seqs[i],
+            total_reward=rollouts.total_reward[i],
+            prediction_accuracy=rollouts.prediction_accuracy[i] if rollouts.prediction_accuracy is not None else None
         )
         for i, annotation in enumerate(annotations)
     }

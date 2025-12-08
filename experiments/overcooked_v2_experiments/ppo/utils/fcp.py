@@ -39,15 +39,15 @@ class FCPWrapperPolicy(AbstractPolicy):
 
         def _compute_action(policy_idx, obs, done, hstate, key):
             params = self._get_params(policy_idx)
-            print("test:", obs.shape, done.shape, hstate.shape, key.shape, type(params))
+            # print("test:", obs.shape, done.shape, hstate.shape, key.shape, type(params))
             return self.policy.compute_action(obs, done, hstate, key, params=params)
 
         action_keys = jax.random.split(key, batch_size)
-        actions, next_hstates = jax.vmap(_compute_action)(
+        actions, next_hstates, extras = jax.vmap(_compute_action)(
             params_idxs, obs, done, hstates, action_keys
         )
 
-        return actions, HStateWrapper(hstates=next_hstates, params_idxs=params_idxs)
+        return actions, HStateWrapper(hstates=next_hstates, params_idxs=params_idxs), extras
 
     def init_hstate(self, batch_size, key):
         assert key is not None

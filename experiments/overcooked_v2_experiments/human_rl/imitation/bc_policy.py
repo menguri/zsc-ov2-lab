@@ -169,7 +169,7 @@ class BCPolicy(AbstractPolicy):
                 hstate = _append_and_to_numpy(bc_hstate, action, obs)
                 hstate = hstate[jnp.newaxis, ...]
 
-        return action, hstate
+        return action, hstate, {}
 
     def init_hstate(self, batch_size, key=None) -> chex.Array:
         hstate = None

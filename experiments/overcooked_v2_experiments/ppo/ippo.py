@@ -401,6 +401,12 @@ def make_train(
                     rng,
                 ) = env_step_state
 
+                # Calculate actor indices and is_ego
+                actor_indices = jnp.repeat(
+                    jnp.arange(env.num_agents, dtype=jnp.int32), model_config["NUM_ENVS"]
+                )
+                is_ego = actor_indices == 0
+
                 # jax.debug.print("check4 {x}", x=hstate.flatten()[0])
 
                 # SELECT ACTION
@@ -642,10 +648,13 @@ def make_train(
                     actual_partner_action = jax.lax.select(mix_mask, rand_action, action_for_env.squeeze())
                     
                     # 5. 환경에 전달할 행동 업데이트
-                    # Fix: Force int32 type and squeeze if necessary
+                    # Fix: Force int32 type
                     action_for_env = actual_partner_action.astype(jnp.int32)
-                    if len(action_for_env.shape) > 1:
-                        action_for_env = action_for_env.squeeze()
+
+                # Ensure action_for_env is squeezed (NUM_ACTORS,) to match carry shape
+                # This fixes the scan carry shape mismatch error (int32[512] vs int32[1,512])
+                if len(action_for_env.shape) > 1:
+                    action_for_env = action_for_env.squeeze()
 
                 # Update last_partner_action for next step history
                 last_partner_action = action_for_env

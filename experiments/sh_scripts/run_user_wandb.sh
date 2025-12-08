@@ -26,7 +26,7 @@ set -euo pipefail
 : "${PANIC_DURATION:=30}"      # default duration (steps)
 
 # E3T (Mixture Partner Policy) defaults
-: "${E3T_EPSILON:=0.05}"       # 파트너 무작위 행동 확률
+# : "${E3T_EPSILON:=0.05}"       # 파트너 무작위 행동 확률 (기본값 제거)
 
 # JAX 메모리 설정
 : "${XLA_PYTHON_CLIENT_PREALLOCATE:=false}"    # 메모리 선할당 방지
@@ -401,7 +401,7 @@ if [[ -n "$CONF_N_THRESHOLD" ]]; then
 fi
 
 # E3T epsilon override
-if [[ -n "$E3T_EPSILON" ]]; then
+if [[ -v E3T_EPSILON && -n "$E3T_EPSILON" ]]; then
   PY_ARGS+=("E3T_EPSILON=${E3T_EPSILON}")
 fi
 

@@ -58,6 +58,18 @@ class ActorCriticRNN(ActorCriticBase):
         if obs_history is not None and act_history is not None:
             self.predict_partner(obs_history, act_history)
 
+        # E3T 추론 로직: partner_prediction이 제공되지 않았지만 obs_history가 있는 경우 계산 수행
+        if partner_prediction is None and obs_history is not None:
+            # act_history가 누락된 경우 더미(0) 사용
+            if act_history is None:
+                # obs_history shape: (Time, Batch, k, H, W, C)
+                # act_history shape should be: (Time, Batch, k)
+                s = obs_history.shape
+                act_history = jnp.zeros((s[0], s[1], s[2]), dtype=jnp.int32)
+            
+            # predict_partner는 (Batch, k, ...)를 기대하므로 Time 축에 대해 vmap 적용
+            partner_prediction = jax.vmap(self.predict_partner)(obs_history, act_history)
+
         print("cnn shapes", hidden.shape, obs.shape, dones.shape)
 
         embedding = obs

@@ -1,38 +1,125 @@
-# ====== OvercookedV2 - layout별 실행 명령 (GPU:0) ======
+#!/bin/bash
 
 # Change to script directory
 cd "$(dirname "$0")" || exit 1
 
-# FCP_DEVICE 인자 처리 (기본값: cpu)
-FCP_DEVICE=${1:-gpu}
+# ==============================================================================
+# FCP Experiment Factory Script
+# Runs FCP experiments sequentially on different layouts.
+# ==============================================================================
 
-# --------------------------------------------------------------------
-# grounded_coord_simple — 고정 레이아웃
-# --------------------------------------------------------------------
-# fcp (population 준비 필요: --fcp 경로 교체) - FCP는 메모리 사용량이 높아 nenvs 64로 감소
-# ./run_user_wandb.sh --gpus 0,1,2,3,4 --env grounded_coord_simple --exp rnn-fcp --fcp fcp_populations/grounded_coord_simple_avs-2-256-sp --env-device cpu --nenvs 256 --nsteps 256 --seeds 10 --fcp-device "$FCP_DEVICE"
+# Common Configuration
+EXP="rnn-fcp"
+ENV_DEVICE="cpu"
+NENVS=256
+NSTEPS=256
 
-# --------------------------------------------------------------------
-# grounded_coord_ring — 고정 레이아웃
-# --------------------------------------------------------------------
-# ./run_user_wandb.sh --gpus 2,3,4,6,7 --env grounded_coord_ring --exp rnn-fcp --fcp fcp_populations/grounded_coord_ring_sp --env-device cpu --nenvs 256 --nsteps 256 --seeds 10 --fcp-device "$FCP_DEVICE"
+# FCP Specific Settings
+FCP_DEVICE="gpu"
+SEEDS=10
 
-# # --------------------------------------------------------------------
-# # demo_cook_simple — 고정 레이아웃
-# # --------------------------------------------------------------------
-# ./run_user_wandb.sh --gpus 0,1,2,3,4 --env demo_cook_simple --exp rnn-fcp --fcp fcp_populations/demo_cook_simple_avs-2-256-sp --env-device cpu --nenvs 256 --nsteps 256 --seeds 10 --fcp-device "$FCP_DEVICE"
+# Function to get FCP path based on env
+get_fcp_path() {
+    local env=$1
+    case $env in
+        "grounded_coord_simple")
+            echo "fcp_populations/grounded_coord_simple_avs-2-256-sp"
+            ;;
+        "grounded_coord_ring")
+            echo "fcp_populations/grounded_coord_ring_sp"
+            ;;
+        "demo_cook_simple")
+            echo "fcp_populations/demo_cook_simple_avs-2-256-sp"
+            ;;
+        "demo_cook_wide")
+            echo "fcp_populations/demo_cook_wide_sp"
+            ;;
+        "test_time_simple")
+            echo "fcp_populations/test_time_simple_avs-2-256-sp"
+            ;;
+        "test_time_wide")
+            echo "fcp_populations/test_time_wide_sp"
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
 
-# # --------------------------------------------------------------------
-# # demo_cook_wide — 고정 레이아웃
-# # --------------------------------------------------------------------
-./run_user_wandb.sh --gpus 3,4,5,6,7 --env demo_cook_wide --exp rnn-fcp --fcp fcp_populations/demo_cook_wide_sp --env-device cpu --nenvs 256 --nsteps 256 --seeds 10 --fcp-device "$FCP_DEVICE"
+# Function to run experiment
+run_fcp() {
+    local gpus=$1
+    local env=$2
+    local layout=$3
+    
+    echo "================================================================================"
+    echo "STARTING FCP EXPERIMENT"
+    echo "ENV: $env, LAYOUT: $layout"
+    echo "GPUS: $gpus"
+    echo "================================================================================"
+    
+    local fcp_path=$(get_fcp_path $env)
+    
+    local cmd="./run_user_wandb.sh \
+        --gpus $gpus \
+        --env $env \
+        --exp $EXP \
+        --env-device $ENV_DEVICE \
+        --nenvs $NENVS \
+        --nsteps $NSTEPS \
+        --seeds $SEEDS \
+        --fcp-device $FCP_DEVICE"
+        
+    if [ -n "$fcp_path" ]; then
+        cmd="$cmd --fcp $fcp_path"
+    fi
+        
+    if [ -n "$layout" ]; then
+        cmd="$cmd --layout $layout"
+    fi
+    
+    echo "Executing: $cmd"
+    $cmd
+    
+    echo "================================================================================"
+    echo "FINISHED FCP EXPERIMENT"
+    echo "================================================================================"
+    echo ""
+}
 
-# # --------------------------------------------------------------------
-# # test_time_simple — 고정 레이아웃
-# # --------------------------------------------------------------------
-# ./run_user_wandb.sh --gpus 0,1,2,3,4 --env test_time_simple --exp rnn-fcp --fcp fcp_populations/test_time_simple_avs-2-256-sp --env-device cpu --nenvs 256 --nsteps 256 --seeds 10 --fcp-device "$FCP_DEVICE"
+# ==============================================================================
+# Execution List (Uncomment lines to run)
+# ==============================================================================
 
-# --------------------------------------------------------------------
-# test_time_wide — 고정 레이아웃
-# --------------------------------------------------------------------
-# ./run_user_wandb.sh --gpus 2,3,4,6,7 --env test_time_wide --exp rnn-fcp --fcp fcp_populations/test_time_wide_sp --env-device cpu --nenvs 256 --nsteps 256 --seeds 10 --fcp-device "$FCP_DEVICE"
+# 1. Grounded Coord Simple
+run_fcp "0,1,2,3,4" "grounded_coord_simple" ""
+
+# 2. Grounded Coord Ring
+run_fcp "0,1,2,3,4" "grounded_coord_ring" ""
+
+# 3. Demo Cook Simple
+run_fcp "0,1,2,3,4" "demo_cook_simple" ""
+
+# 4. Demo Cook Wide
+run_fcp "0,1,2,3,4" "demo_cook_wide" ""
+
+# 5. Test Time Simple
+run_fcp "0,1,2,3,4" "test_time_simple" ""
+
+# 6. Test Time Wide
+run_fcp "0,1,2,3,4" "test_time_wide" ""
+
+# 7. Cramped Room (Original) - No FCP path
+run_fcp "0,1,2,3,4" "cramped_room" ""
+
+# 8. Asymmetric Advantages (Original) - No FCP path
+run_fcp "0,1,2,3,4" "asymm_advantages" ""
+
+# 9. Coordination Ring (Original) - No FCP path
+run_fcp "0,1,2,3,4" "coord_ring" ""
+
+# 10. Forced Coordination (Original) - No FCP path
+run_fcp "0,1,2,3,4" "forced_coord" ""
+
+# 11. Counter Circuit (Original) - No FCP path
+run_fcp "0,1,2,3,4" "counter_circuit" ""
