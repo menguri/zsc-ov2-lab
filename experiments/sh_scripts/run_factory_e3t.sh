@@ -89,7 +89,7 @@ run_e3t "5,6" "grounded_coord_simple" ""
 # run_e3t "0,1,2,3,4" "test_time_simple" ""
 
 # # 6. Test Time Wide
-run_e3t "5,6" "test_time_wide" ""
+# run_e3t "5,6" "test_time_wide" ""
 
 # # 5. Cramped Room (Original)
 # run_e3t "0,1,2,3,4" "cramped_room" ""
@@ -97,20 +97,20 @@ run_e3t "5,6" "test_time_wide" ""
 # # 6. Asymmetric Advantages (Original)
 # run_e3t "0,1,2,3,4" "asymm_advantages" ""
 
-# 7. Coordination Ring (Original)
-run_e3t "5,6" "coord_ring" ""
+# # 7. Coordination Ring (Original)
+# run_e3t "5,6" "coord_ring" ""
 
-# 8. Forced Coordination (Original)
-run_e3t "5,6" "forced_coord" ""
+# # 8. Forced Coordination (Original)
+# run_e3t "5,6" "forced_coord" ""
 
-# 9. Counter Circuit (Original)
-run_e3t "5,6" "counter_circuit" ""
+# # 9. Counter Circuit (Original)
+# run_e3t "5,6" "counter_circuit" ""
 
-# 7. Coordination Ring (Original)
-run_e3t "5,6" "coord_ring" "" "1"
+# # 7. Coordination Ring (Original)
+# run_e3t "5,6" "coord_ring" "" "1"
 
-# 8. Forced Coordination (Original)
-run_e3t "5,6" "forced_coord" "" "1"
+# # 8. Forced Coordination (Original)
+# run_e3t "5,6" "forced_coord" "" "1"
 
-# 9. Counter Circuit (Original)
-run_e3t "5,6" "counter_circuit" "" "1"
+# # 9. Counter Circuit (Original)
+# run_e3t "5,6" "counter_circuit" "" "1"

@@ -2,7 +2,6 @@ defaults:
   # - env: default
   - wandb: default
   - model: cnn
-  - confidence: disabled
 
 SEED: 42
 NUM_SEEDS: 10
@@ -11,10 +10,3 @@ NUM_CHECKPOINTS: 3
 VISUALIZE: False
 
 # NUM_ITERATIONS: 10
-
-# Panic mode (partner random action only) global defaults.
-# "panic-sp" experiment will override enabled/start_step/duration as needed.
-panic:
-  enabled: false       # Set true in panic-sp or via CLI override (+panic.enabled=true)
-  start_step: 0        # Episode step at which panic activates
-  duration: 0          # Length in steps; 0 => no-op
