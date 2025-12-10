@@ -42,10 +42,21 @@ pip install -e experiments
 | **SA** (State-Augmentation) | 다른 에이전트의 잠재적 행동을 상태에 추가하여 학습합니다. | `python overcooked_v2_experiments/ppo/main.py +experiment=rnn-sa +env=grounded_coord_simple NUM_SEEDS=10 NUM_ITERATIONS=10` |
 | **OP** (Other-Play) | 미리 훈련된 다양한 에이전트(population)와 무작위로 매칭되어 학습합니다. | `python overcooked_v2_experiments/ppo/main.py +experiment=rnn-op +env=grounded_coord_simple NUM_SEEDS=10` |
 | **FCP** (Fictitious Co-Play) | SP로 학습된 에이전트 집단(population) 내에서 파트너를 선택하여 학습합니다. | `python overcooked_v2_experiments/ppo/main.py +experiment=rnn-fcp +env=grounded_coord_simple NUM_SEEDS=1 +FCP=<population_path>` |
+| **E3T** (Environment-Ego-Teammate) | 파트너의 행동을 예측하는 모듈을 추가하여, 예측된 정보를 정책 입력으로 활용합니다. | `python overcooked_v2_experiments/ppo/main.py +experiment=rnn-e3t +env=grounded_coord_simple NUM_SEEDS=10` |
 
-- `+experiment`: `rnn-sp`, `rnn-sa`, `rnn-op`, `rnn-fcp` 등 실험 유형을 지정합니다.
+- `+experiment`: `rnn-sp`, `rnn-sa`, `rnn-op`, `rnn-fcp`, `rnn-e3t` 등 실험 유형을 지정합니다.
 - `+env`: `grounded_coord_simple` 등 환경 레이아웃을 지정합니다.
 - `NUM_SEEDS`: 동시에 실행할 시드 수를 설정합니다.
+
+### E3T & STL 실험 (Partner Modeling)
+
+이 저장소는 파트너 모델링을 위한 최신 알고리즘인 E3T와 STL을 지원합니다.
+
+#### 1. E3T (Environment-Ego-Teammate)
+E3T는 **Stateless Prediction** 방식을 사용하여 파트너를 모델링합니다.
+- **작동 원리**: 매 스텝 최근 5개의 관측(`obs_history`)과 파트너 행동(`act_history`)을 입력받아 파트너의 다음 행동을 예측합니다.
+- **특징**: 과거의 잠재 상태(Latent State)를 유지하지 않고 현재의 기록(History)에만 의존하므로, 파트너의 행동이 급변할 경우 예측이 불안정해질 수 있습니다.
+
 
 ### FCP 실험 워크플로우
 
