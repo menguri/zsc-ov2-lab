@@ -26,6 +26,6 @@ def initialize_carry(config, batch_size: int):
     model_config = config["model"]
 
     if model_config["TYPE"] == "RNN":
-        return ScannedRNN.initialize_carry(batch_size, model_config["GRU_HIDDEN_DIM"])
+        return ActorCriticRNN.initialize_carry(batch_size, model_config["GRU_HIDDEN_DIM"])
 
     return None

@@ -19,6 +19,7 @@ sys.path.append(os.path.dirname(os.path.dirname(DIR)))
 
 from overcooked_v2_experiments.ppo.policy import (
     PPOParams,
+    PPOPolicy,
     policy_checkoints_to_policy_pairing,
 )
 from overcooked_v2_experiments.ppo.utils.store import (
@@ -48,7 +49,7 @@ def visualize_ppo_policy(
         raise ValueError("Cannot run cross play with all checkpoints")
 
     # 1) PPO 파라미터 로드: all_params: dict[run_id][ckpt_id] -> PPOParams
-    all_params, config = load_all_checkpoints(run_base_dir, final_only=final_only)
+    all_params, config, configs = load_all_checkpoints(run_base_dir, final_only=final_only)
 
     # 2) 환경 생성
     initial_env_kwargs = copy.deepcopy(config["env"]["ENV_KWARGS"])
@@ -112,69 +113,152 @@ def visualize_ppo_policy(
             is_leaf=lambda x: type(x) is PPOParams,
         )
 
-    # 여기까지 구조 요약:
-    #   - self-play: all_params[run_id][ckpt_id] = PolicyPairing
-    #   - cross-play: all_params["cross"][comb_key] = PolicyPairing
+    # JIT Cache
+    jit_cache = {}
+    results_structure = {}
 
-    def _policy_viz(pairing):
-        """
-        PolicyPairing 하나에 대해:
-          1) 체크포인트 → 실제 policy 함수로 변환
-          2) rollout 실행
-          3) gif + total_reward 반환
-        """
-        env_kwargs_no_layout = copy.deepcopy(env_kwargs)
-        layout_name = env_kwargs_no_layout.pop("layout")
-
-        # PPOParams → 실제 callable policy 구조로 변환
-        pairing = policy_checkoints_to_policy_pairing(pairing, config)
-
-        # eval_pairing이 rollout 돌리고, frame_seq/total_reward 등을 들고있는 객체 반환
-        # ALG_NAME은 config의 최상위 레벨에 위치함 (rnn-e3t.yaml 등에서 @package _global_ 사용)
-        alg_name = config.get("ALG_NAME", "PPO")
-        # 만약 alg 키 아래에 있다면 (구버전 호환)
-        if "alg" in config:
-            alg_name = config["alg"].get("ALG_NAME", alg_name)
-
-        return eval_pairing(
-            pairing,
-            layout_name,
-            key,
-            env_kwargs=env_kwargs_no_layout,
-            num_seeds=num_seeds,
-            all_recipes=num_seeds is None,
-            no_viz=no_viz,
-            algorithm=alg_name,
-        )
-
-    # JIT 한 번 감싸두면, 여러 policy에 대해 돌릴 때도 컴파일 한 번만 사용됨
-    # _policy_viz_jit = jax.jit(_policy_viz, static_argnames=())
-
-    # ❗ 여기 포인트: no_viz에 따라 jit 여부를 바꾼다
-    if no_viz:
-        # 프레임 안 만들고 리워드만 계산 → 순수 JAX → jit 가능
-        _policy_viz = jax.jit(_policy_viz, static_argnames=())
-
-    # 4) PolicyPairing만 쭉 뽑아서 flat 리스트와 treedef로 변환
-    policy_pairings, treedef = jax.tree_util.tree_flatten(
-        all_params, is_leaf=lambda x: type(x) is PolicyPairing
-    )
-
-    # ❌ 여기서 파라미터를 stack해서 (B, ...)로 만드는 건 금지
-    # policy_pairings = jax.tree_util.tree_map(lambda *v: jnp.stack(v), *policy_pairings)
-    #
-    # → 이렇게 하면 CNN kernel이 (1,1,38,128) → (B,1,1,38,128)이 되어
-    #   Flax Conv 초기화 shape (10,1,1,38,128) 같은 expectation과 충돌함.
-
-    # ✅ 대신 PolicyPairing을 하나씩 순차적으로 평가 (파라미터는 항상 scalar tree)
-    results = []
-    for idx, pairing in enumerate(policy_pairings):
-        print(f"[EVAL] Running _policy_viz for policy_pairing {idx+1}/{len(policy_pairings)}")
-        viz_result = _policy_viz(pairing)
-        results.append(viz_result)
-
-    # 5) 결과들을 원래 트리 구조(dict[run][ckpt] → dict[annotation → viz])로 복원
-    all_params = jax.tree_util.tree_unflatten(treedef, results)
+    # Iterate over all pairings
+    for first_level, first_level_runs in all_params.items():
+        results_structure[first_level] = {}
+        for second_level, pairing in first_level_runs.items():
+            # Determine algs and configs
+            if first_level == "cross":
+                # Parse second_level (comb_key) e.g. "cross-0_1"
+                run_indices = second_level.replace("cross-", "").split("_")
+                
+                # Map back to run_ids using run_keys
+                # Note: run_keys are "run_0", "run_1" etc.
+                # run_indices are "0", "1" etc.
+                # We assume run_keys are sorted or consistent with indices used in run_combinations
+                # run_combinations used range(num_runs), so indices correspond to run_keys index
+                
+                # But wait, run_keys is list(all_params.keys()) BEFORE modification.
+                # We need to ensure run_keys is consistent.
+                # run_keys was created before 'if cross:' block.
+                
+                # run_indices are indices into run_keys list?
+                # In 'run_ids = [run_keys[i].replace("run_", "") for i in run_combination]'
+                # Yes, run_combination contains indices into run_keys.
+                # But 'run_indices' here comes from 'second_level' string which used 'run_ids'.
+                # 'run_ids' are "0", "1" etc.
+                # So we need to find run_key that has "run_0".
+                
+                current_run_ids = [f"run_{idx}" for idx in run_indices]
+                current_configs = [configs[rid] for rid in current_run_ids]
+                
+                # Get alg names
+                current_algs = []
+                for cfg in current_configs:
+                    alg = cfg.get("ALG_NAME", "PPO")
+                    if "alg" in cfg:
+                        alg = cfg["alg"].get("ALG_NAME", alg)
+                    
+                    # Check for STL (anchor)
+                    # config 구조가 다양할 수 있으므로 여러 경로 확인
+                    is_anchor = False
+                    if "anchor" in cfg:
+                        is_anchor = cfg["anchor"]
+                    elif "alg" in cfg and "anchor" in cfg["alg"]:
+                        is_anchor = cfg["alg"]["anchor"]
+                    # model config 내부에 있을 수도 있음 (예: config.model.anchor)
+                    elif "model" in cfg and "anchor" in cfg["model"]:
+                        is_anchor = cfg["model"]["anchor"]
+                    
+                    if alg == "E3T" and is_anchor:
+                        alg = "STL"
+                        
+                    current_algs.append(alg)
+                current_algs = tuple(current_algs)
+                
+            else:
+                # Self-play
+                # first_level is run_id
+                run_id = first_level
+                cfg = configs[run_id]
+                alg = cfg.get("ALG_NAME", "PPO")
+                if "alg" in cfg:
+                    alg = cfg["alg"].get("ALG_NAME", alg)
+                
+                # Check for STL (anchor)
+                is_anchor = False
+                if "anchor" in cfg:
+                    is_anchor = cfg["anchor"]
+                elif "alg" in cfg and "anchor" in cfg["alg"]:
+                    is_anchor = cfg["alg"]["anchor"]
+                elif "model" in cfg and "anchor" in cfg["model"]:
+                    is_anchor = cfg["model"]["anchor"]
+                
+                if alg == "E3T" and is_anchor:
+                    alg = "STL"
+                
+                current_configs = [cfg] * num_actors
+                current_algs = tuple([alg] * num_actors)
+            
+            # Determine alg_arg for eval_pairing
+            # Heuristic: if any E3T, use E3T. Else use first.
+            if "E3T" in current_algs:
+                alg_arg = "E3T"
+            elif "STL" in current_algs:
+                alg_arg = "STL"
+            else:
+                alg_arg = current_algs[0]
+            
+            # JIT Key
+            jit_key = current_algs
+            
+            if jit_key not in jit_cache:
+                print(f"Compiling JIT for pair: {jit_key}")
+                
+                # Define function to JIT
+                # We capture current_configs and alg_arg in closure
+                
+                def _viz_impl(pairing_params):
+                    policies = []
+                    for i in range(num_actors):
+                        # pairing_params is a PolicyPairing object, which is a PyTree.
+                        # When flattened/unflattened by JAX, it behaves like a list of policies.
+                        # However, here pairing_params is passed directly.
+                        # PolicyPairing stores policies in self.policies list.
+                        # But wait, pairing_params passed to _viz_impl is likely the PPOParams structure 
+                        # if we look at how it was constructed in all_params.
+                        
+                        # In self-play: PolicyPairing.from_single_policy(PPOParams, num_actors)
+                        # In cross-play: PolicyPairing(PPOParams_0, PPOParams_1)
+                        
+                        # So pairing_params[i] should give us the PPOParams for agent i.
+                        agent_params = pairing_params[i]
+                        
+                        # Create policy with captured config
+                        policies.append(PPOPolicy(agent_params.params, current_configs[i]))
+                    
+                    policy_pairing = PolicyPairing(*policies)
+                    
+                    env_kwargs_no_layout = copy.deepcopy(env_kwargs)
+                    layout_name = env_kwargs_no_layout.pop("layout")
+                    
+                    return eval_pairing(
+                        policy_pairing,
+                        layout_name,
+                        key,
+                        env_kwargs=env_kwargs_no_layout,
+                        num_seeds=num_seeds,
+                        all_recipes=num_seeds is None,
+                        no_viz=no_viz,
+                        algorithm=alg_arg,
+                    )
+                
+                if no_viz:
+                    jit_cache[jit_key] = jax.jit(_viz_impl)
+                else:
+                    jit_cache[jit_key] = _viz_impl
+            
+            # Execute
+            print(f"[EVAL] Running {jit_key} for {first_level}/{second_level}")
+            viz_result = jit_cache[jit_key](pairing)
+            results_structure[first_level][second_level] = viz_result
+    
+    # Update all_params with results
+    all_params = results_structure
 
     labels = ["run", "checkpoint"]
     if cross:
@@ -182,11 +266,10 @@ def visualize_ppo_policy(
 
     # 6) reward summary + gif 저장
     rows = []
-    max_agents = 0
     for first_level, first_level_runs in all_params.items():
         for second_level, second_level_runs in first_level_runs.items():
             checkpoint_sum = 0.0
-            acc_sum = None
+            acc_sum = jnp.zeros(num_actors)
             acc_count = 0
 
             print(f"{labels[0]}: {first_level}, {labels[1]}: {second_level}")
@@ -205,15 +288,14 @@ def visualize_ppo_policy(
                 row = [first_level, second_level, annotation, total_reward]
                 
                 if pred_acc is not None:
-                    # pred_acc is (num_agents,)
-                    if acc_sum is None:
-                        acc_sum = jnp.zeros_like(pred_acc)
                     acc_sum += pred_acc
                     acc_count += 1
                     
                     for i in range(pred_acc.shape[0]):
                         row.append(float(pred_acc[i]))
-                    max_agents = max(max_agents, pred_acc.shape[0])
+                else:
+                    for i in range(num_actors):
+                        row.append(0.0)
                 
                 rows.append(row)
                 print(f"\t{annotation}:\t{total_reward}")
@@ -227,6 +309,9 @@ def visualize_ppo_policy(
                 print(f"\tMean accuracy:\t{acc_mean}")
                 for i in range(acc_mean.shape[0]):
                     mean_row.append(float(acc_mean[i]))
+            else:
+                for i in range(num_actors):
+                    mean_row.append(0.0)
             
             rows.append(mean_row)
 
@@ -236,7 +321,7 @@ def visualize_ppo_policy(
     with open(summery_file, "w", newline="") as csvfile:
         writer = csv.writer(csvfile)
         fieldnames = [labels[0], labels[1], "annotation", "total_reward"]
-        for i in range(max_agents):
+        for i in range(num_actors):
             fieldnames.append(f"pred_acc_agent_{i}")
             
         writer.writerow(fieldnames)

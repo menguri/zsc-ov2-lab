@@ -25,6 +25,9 @@ def _infer_run_suffix(config) -> str:
     # E3T 알고리즘인 경우 suffix에 e3t 추가
     if config.get("ALG_NAME") == "E3T":
         suffix = f"e3t"
+        # STL (Anchor) 활성화 시 suffix에 stl 추가
+        if config.get("model", {}).get("anchor", False):
+            suffix = f"stl"
 
     confidence_profile = config.get("CONF_NAME")
     if confidence_profile and confidence_profile != "disabled":

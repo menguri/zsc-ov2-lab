@@ -27,6 +27,7 @@ set -euo pipefail
 
 # E3T (Mixture Partner Policy) defaults
 # : "${E3T_EPSILON:=0.05}"       # 파트너 무작위 행동 확률 (기본값 제거)
+: "${ANCHOR_ENABLED:=0}"       # 1 => enable STL anchor
 
 # JAX 메모리 설정
 : "${XLA_PYTHON_CLIENT_PREALLOCATE:=false}"    # 메모리 선할당 방지
@@ -181,6 +182,7 @@ while [[ $# -gt 0 ]]; do
     --conf-target) CONF_TARGET="$2"; shift 2;;
     --conf-n-threshold) CONF_N_THRESHOLD="$2"; shift 2;;
     --e3t-epsilon) E3T_EPSILON="$2"; shift 2;;
+    --anchor)     ANCHOR_ENABLED="1"; shift 1;;
     --mem-frac)   XLA_PYTHON_CLIENT_MEM_FRACTION="$2"; shift 2;;
     --fcp-device) FCP_DEVICE="$2"; shift 2 ;;
     --)           shift; break;;
@@ -403,6 +405,11 @@ fi
 # E3T epsilon override
 if [[ -v E3T_EPSILON && -n "$E3T_EPSILON" ]]; then
   PY_ARGS+=("E3T_EPSILON=${E3T_EPSILON}")
+fi
+
+# STL Anchor override
+if [[ "$ANCHOR_ENABLED" == "1" ]]; then
+  PY_ARGS+=("model.anchor=True")
 fi
 
 # Panic overrides appended if enabled (Hydra keys defined in base.yaml)

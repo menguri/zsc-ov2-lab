@@ -67,7 +67,7 @@ def get_rollout(policies: PolicyPairing, env, key, algorithm="PPO") -> PolicyRol
     # obs_history 및 act_history 초기화 (E3T인 경우에만)
     init_obs_history = None
     init_act_history = None
-    if algorithm == "E3T":
+    if algorithm in ["E3T", "STL"]:
         # k=5라고 가정
         k = 5
         obs_shape = env.observation_space().shape
@@ -86,7 +86,7 @@ def get_rollout(policies: PolicyPairing, env, key, algorithm="PPO") -> PolicyRol
 
         # obs_history 업데이트 (E3T인 경우에만)
         next_obs_history = None
-        if algorithm == "E3T":
+        if algorithm in ["E3T", "STL"]:
             def update_history(hist, new_obs, is_done):
                 # 완료 시 리셋
                 hist = jax.lax.select(is_done, jnp.zeros_like(hist), hist)
@@ -107,7 +107,7 @@ def get_rollout(policies: PolicyPairing, env, key, algorithm="PPO") -> PolicyRol
         
         # E3T인 경우에만 obs_history 및 act_history 전달
         kwargs = {}
-        if algorithm == "E3T":
+        if algorithm in ["E3T", "STL"]:
             kwargs["obs_history"] = next_obs_history if next_obs_history is not None else obs_history
             kwargs["act_history"] = act_history # act_history는 아직 업데이트 전 (이전 스텝까지의 파트너 행동)
 
@@ -117,7 +117,7 @@ def get_rollout(policies: PolicyPairing, env, key, algorithm="PPO") -> PolicyRol
         prediction_correct = jnp.zeros(env.num_agents, dtype=jnp.float32)
         prediction_mask = jnp.zeros(env.num_agents, dtype=jnp.float32)
 
-        if algorithm == "E3T":
+        if algorithm in ["E3T", "STL"]:
             for i in range(env.num_agents):
                 agent_id = f"agent_{i}"
                 partner_idx = (i + 1) % env.num_agents
@@ -141,7 +141,7 @@ def get_rollout(policies: PolicyPairing, env, key, algorithm="PPO") -> PolicyRol
         # 주의: act_history는 '파트너'의 행동을 저장해야 함
         # agent_0의 act_history에는 agent_1의 행동을, agent_1에는 agent_0의 행동을 저장
         next_act_history = None
-        if algorithm == "E3T":
+        if algorithm in ["E3T", "STL"]:
             def update_act_history(hist, partner_act, is_done):
                 # 완료 시 리셋
                 hist = jax.lax.select(is_done, jnp.zeros_like(hist), hist)

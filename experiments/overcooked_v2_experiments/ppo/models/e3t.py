@@ -2,6 +2,7 @@ import jax
 import jax.numpy as jnp
 import flax.linen as nn
 from flax.linen.initializers import orthogonal, constant
+import functools
 
 class StepWiseEncoder(nn.Module):
     """
@@ -100,3 +101,122 @@ class PartnerPredictionModule(nn.Module):
         x = x / (norm + 1e-6)
         
         return x
+
+class STLPartnerPredictor(nn.Module):
+    """
+    STL (Stabilizing Trajectories via Inference-Level Locking)이 적용된 파트너 예측 모듈.
+    anchor 플래그에 따라 잠재 벡터(z)를 업데이트하거나 기존 E3T 방식을 따릅니다.
+    """
+    action_dim: int = 6
+
+    @nn.compact
+    def __call__(self, prev_z, obs_history, act_history, anchor):
+        """
+        Args:
+            prev_z: 이전 단계의 잠재 벡터 (Batch, ActionDim) - L2 Normalized
+            obs_history: (Batch, 5, H, W, C)
+            act_history: (Batch, 5)
+            anchor: bool scalar (True: STL 적용, False: Standard E3T)
+        
+        Returns:
+            z_locked: 업데이트된 잠재 벡터 (Batch, ActionDim) - L2 Normalized
+            prediction: 파트너 행동 예측 (Batch, ActionDim) - z_locked와 동일
+        """
+        # 유연한 Shape Unpacking: 뒤에서부터 3개(H, W, C)는 확실하므로 나머지를 Batch/Context로 처리
+        *batch_dims, H, W, C = obs_history.shape
+        
+        # batch_dims가 [Batch, Context] 형태일 것임
+        # Flatten Batch and Context for Encoder
+        # obs_history: (..., H, W, C) -> (Batch*Context, H, W, C)
+        obs_flat = obs_history.reshape(-1, H, W, C)
+        act_flat = act_history.reshape(-1)
+        
+        encoder = StepWiseEncoder(action_dim=self.action_dim)
+        encoded_steps = encoder(obs_flat, act_flat)
+        
+        # Reshape back to (Batch, Context, -1)
+        # batch_dims의 마지막 차원이 Context라고 가정
+        encoded_steps = encoded_steps.reshape(*batch_dims, -1)
+        
+        # Flatten Context dimension to get History Representation
+        # (Batch, Context, Embed) -> (Batch, Context*Embed)
+        history_repr = encoded_steps.reshape(*batch_dims[:-1], -1)
+        
+        x = history_repr
+        for _ in range(3):
+            x = nn.Dense(features=64, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(x)
+            x = nn.leaky_relu(x)
+            
+        x = nn.Dense(features=64, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(x)
+        x = nn.tanh(x)
+        
+        x = nn.Dense(features=self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0))(x)
+        
+        # L2 Normalize (z_raw)
+        norm = jnp.linalg.norm(x, axis=-1, keepdims=True)
+        z_raw = x / (norm + 1e-6)
+        
+        # 2. STL Logic
+        # Cosine Similarity: Dot product of normalized vectors
+        # prev_z도 normalized 상태라고 가정
+        cos_sim = jnp.sum(z_raw * prev_z, axis=-1, keepdims=True) # (Batch, 1)
+        
+        # Gating Factor alpha
+        alpha = nn.relu(cos_sim)
+        
+        # Update Rule
+        # anchor가 True일 때만 STL 적용
+        def update_locked(z_r, z_p, a):
+            return a * z_r + (1.0 - a) * z_p
+            
+        z_locked_stl = update_locked(z_raw, prev_z, alpha)
+        
+        # anchor에 따른 분기
+        # anchor가 (Batch, ) 또는 (Batch, Context) 형태일 수 있음
+        # z_raw는 (Batch, Context, Embed_Dim) 형태
+        
+        # Ensure anchor has same rank as z_raw for broadcasting
+        ndim_diff = z_raw.ndim - anchor.ndim
+        if ndim_diff > 0:
+            for _ in range(ndim_diff):
+                anchor = jnp.expand_dims(anchor, axis=-1)
+            
+        z_locked = jnp.where(anchor, z_locked_stl, z_raw)
+        
+        # 3. L2 Normalize z_locked
+        norm_locked = jnp.linalg.norm(z_locked, axis=-1, keepdims=True)
+        z_locked = z_locked / (norm_locked + 1e-6)
+        
+        return z_locked, z_locked
+
+
+class ScannedSTLPartnerPredictor(nn.Module):
+    """
+    STLPartnerPredictor를 시간 축(Time Axis)에 대해 스캔(Scan)하는 래퍼 클래스.
+    """
+    action_dim: int = 6
+    
+    @functools.partial(
+        nn.scan,
+        variable_broadcast="params",
+        in_axes=0,
+        out_axes=0,
+        split_rngs={"params": False},
+    )
+    @nn.compact
+    def __call__(self, carry, x):
+        """
+        Args:
+            carry: prev_z (Batch, ActionDim)
+            x: (obs_history, act_history, anchor)
+               obs_history: (Batch, 5, H, W, C)
+               act_history: (Batch, 5)
+               anchor: (Batch,) or Scalar broadcasted
+        """
+        prev_z = carry
+        obs_history, act_history, anchor = x
+        
+        model = STLPartnerPredictor(action_dim=self.action_dim)
+        new_z, prediction = model(prev_z, obs_history, act_history, anchor)
+        
+        return new_z, prediction
