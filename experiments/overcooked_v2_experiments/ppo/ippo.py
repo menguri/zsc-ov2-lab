@@ -71,10 +71,6 @@ def make_train(
     e3t_epsilon = config.get("E3T_EPSILON", 0.05)
     use_partner_modeling = config.get("USE_PARTNER_MODELING", True)
 
-    confidence_config = config.get("confidence_trigger", {})
-    use_confidence_trigger = bool(confidence_config.get("enabled", False))
-    print(f"trigger : {use_confidence_trigger}")
-
     # Optional device selection for environment to mitigate GPU OOM.
     # Usage via Hydra override: +ENV_DEVICE=cpu  (default: gpu / auto)
     env_device = config.get("ENV_DEVICE", None)  # None -> default placement
@@ -191,20 +187,6 @@ def make_train(
     print("train_mask_flat", train_mask_flat.shape)
     print("train_mask_flat sum", train_mask_flat.sum())
 
-    # ------------------------------------------------------------------
-    # 확신(trigger) 옵션 파싱
-    #   - mode: under(불확실시 발동) / over(과도한 확신 시 발동)
-    #   - entropy_threshold: 엔트로피 기준값
-    #   - cooldown_steps: 트리거 이후 강제 행동 지속 스텝 수
-    #   - target: 어떤 에이전트에 적용할지 (ego/partner/both)
-    # ------------------------------------------------------------------
-    confidence_mode = str(confidence_config.get("mode", "under")).lower()
-    confidence_threshold = float(confidence_config.get("entropy_threshold", 0.8))
-    confidence_cooldown_steps = int(confidence_config.get("cooldown_steps", 5))
-    confidence_target = str(confidence_config.get("target", "partner")).lower()
-    n_threshold = int(confidence_config.get("n_threshold", 1.0))
-    cooldown_value = jnp.array(confidence_cooldown_steps, dtype=jnp.int32)
-
     # NUM_ACTORS = (env.num_agents * NUM_ENVS)이므로, 각 슬롯이 어떤 에이전트인지 구분하기 위해
     # 반복되는 인덱스 벡터를 만들어 ego/partner 마스크를 구성한다.
     # batchify 결과는 Agent Major 순서 ([Ag0_Env0, ..., Ag0_EnvN, Ag1_Env0, ...])이므로
@@ -214,11 +196,6 @@ def make_train(
     )
     ego_actor_mask = actor_indices == 0
     partner_actor_mask = actor_indices == (env.num_agents - 1)
-    confidence_target_mask = jnp.ones_like(actor_indices, dtype=bool)
-    if confidence_target == "ego":
-        confidence_target_mask = ego_actor_mask
-    elif confidence_target == "partner" and env.num_agents > 1:
-        confidence_target_mask = partner_actor_mask
 
     use_population_annealing = False
     if "POPULATION_ANNEAL_HORIZON" in config:
@@ -374,8 +351,6 @@ def make_train(
                 initial_population_hstate,
                 last_population_annealing_mask,
                 initial_fcp_pop_agent_idxs,
-                confidence_counters,
-                confidence_episode_counts,
                 obs_history,
                 act_history,
                 last_partner_action,
@@ -396,13 +371,9 @@ def make_train(
                     population_hstate,
                     population_annealing_mask,
                     fcp_pop_agent_idxs,
-                    confidence_counters,
-                    confidence_episode_counts,
                     obs_history,
                     act_history,
                     last_partner_action,
-                    completed_trigger_sum,
-                    completed_episode_count,
                     rng,
                 ) = env_step_state
 
@@ -512,44 +483,6 @@ def make_train(
                 log_action_dim = jnp.log(jnp.array(num_action_choices, dtype=jnp.float32))
                 safe_log_action_dim = jnp.maximum(log_action_dim, 1e-6)
                 policy_entropy = raw_policy_entropy / safe_log_action_dim
-                confidence_trigger_mask = jnp.zeros(
-                    (model_config["NUM_ACTORS"],), dtype=jnp.bool_
-                )
-                random_replace_mask = jnp.zeros_like(confidence_trigger_mask)
-
-                if use_confidence_trigger:
-                    # 2) 모드에 따라 임계값 비교 (under: 높을수록 불확신, over: 낮을수록 과신)
-                    if confidence_mode == "under":
-                        trigger_mask = policy_entropy > confidence_threshold
-                    else:
-                        trigger_mask = policy_entropy < confidence_threshold
-
-                    # 3) 대상 에이전트 + 현재 카운터가 0인 슬롯 + 에피소드별 트리거 횟수 제한에만 트리거 허용
-                    confidence_episode_counts_per_actor = jnp.tile(confidence_episode_counts, env.num_agents)
-                    trigger_mask = (
-                        trigger_mask
-                        & confidence_target_mask
-                        & (confidence_counters == 0)
-                        & (confidence_episode_counts_per_actor < n_threshold)
-                    )
-
-                    # 4) 트리거된 슬롯은 cooldown_steps 값으로 카운터를 세팅
-                    confidence_counters = jnp.where(
-                        trigger_mask,
-                        jnp.full_like(confidence_counters, cooldown_value),
-                        confidence_counters,
-                    )
-                    confidence_trigger_mask = trigger_mask
-
-                    # 레이아웃마다 NUM_ENVS * num_agents 순서로 펼쳐져 있으므로, env 단위로 reshape하여
-                    # 이번 스텝에서 새롭게 발동한 trigger 횟수를 episode 누적 버퍼에 추가한다.
-                    # trigger_mask: (num_agents * num_envs,) -> reshape to (num_agents, num_envs) -> sum over agents
-                    trigger_events_by_env = trigger_mask.reshape(
-                        (env.num_agents, model_config["NUM_ENVS"])
-                    ).sum(axis=0)
-                    confidence_episode_counts = confidence_episode_counts + trigger_events_by_env.astype(
-                        jnp.float32
-                    )
 
                 action_pick_mask = jnp.ones(
                     (model_config["NUM_ACTORS"],), dtype=jnp.bool_
@@ -609,31 +542,6 @@ def make_train(
 
                     # use action_pick_mask to select the action from the population or the network
                     action_for_env = jnp.where(action_pick_mask, action_for_env, pop_actions)
-
-                if use_confidence_trigger:
-                    # --------------------------------------------------------------
-                    # 랜덤 파트너 액션 주입
-                    #   - random_replace_mask: 냉각(cooldown)이 남아 강제 랜덤 행동이 필요한 슬롯
-                    #   - mask(True)면 정책 액션 유지, False면 완전 균등샘플(random_actions)로 대체
-                    # --------------------------------------------------------------
-                    random_replace_mask = confidence_target_mask & (confidence_counters > 0)
-                    keep_policy_action_mask = ~random_replace_mask
-
-                    rng, _rng_random = jax.random.split(rng)
-                    random_actions = jax.random.randint(
-                        _rng_random,
-                        action_for_env.shape,
-                        0,
-                        num_action_choices,
-                        dtype=action_for_env.dtype,
-                    )
-
-                    # 기존 panic 모드처럼 mask(True) → 정책 샘플 유지, False → 무작위 액션으로 치환
-                    action_for_env = jnp.where(
-                        keep_policy_action_mask,
-                        action_for_env,
-                        random_actions,
-                    )
 
                 # E3T 알고리즘: 파트너 정책 혼합 (Mixture Partner Policy)
                 # [E3T] 파트너 행동 변경 로직 (Mixture Policy)
@@ -722,17 +630,10 @@ def make_train(
                 info["combined_reward"] = combined_reward  # PPO 학습에 실제 사용되는 최종 보상
 
                 # --------------------------------------------------------------
-                # confidence / entropy 디버깅 정보를 info에 추가
+                # entropy 디버깅 정보를 info에 추가
                 #   - policy_entropy: 각 슬롯별 정책 엔트로피 (항상 기록)
-                #   - confidence_trigger: 이번 스텝에서 새롭게 발동한 슬롯 (0/1)
-                #   - confidence_cooldown: 남은 쿨다운 스텝
-                #   - random_step_active: 랜덤 액션으로 대체된 슬롯 (0/1)
                 # --------------------------------------------------------------
                 info["policy_entropy"] = policy_entropy
-                if use_confidence_trigger:
-                    info["confidence_trigger"] = confidence_trigger_mask.astype(jnp.int32)
-                    info["confidence_cooldown"] = confidence_counters
-                    info["random_step_active"] = random_replace_mask.astype(jnp.int32)
 
                 info = jax.tree_util.tree_map(
                     lambda x: x.reshape((model_config["NUM_ACTORS"])), info
@@ -788,36 +689,6 @@ def make_train(
                     z_state_in,
                 )
 
-                if use_confidence_trigger:
-                    # 스텝이 끝날 때마다 1씩 감소 (음수 방지)
-                    confidence_counters = jnp.maximum(
-                        confidence_counters - 1, 0
-                    )
-
-                    # 에피소드가 종료된 슬롯은 카운터 완전 초기화
-                    episode_reset_mask = jnp.tile(
-                        done["__all__"], env.num_agents
-                    )
-                    confidence_counters = jnp.where(
-                        episode_reset_mask,
-                        0,
-                        confidence_counters,
-                    )
-
-                    # env 단위 episode 종료 시점에 이번 episode에서 발생한 trigger 횟수를 로깅 버퍼에 누적
-                    episode_done_env = done["__all__"].astype(jnp.float32)
-                    completed_trigger_sum = completed_trigger_sum + jnp.sum(
-                        confidence_episode_counts * episode_done_env
-                    )
-                    completed_episode_count = completed_episode_count + jnp.sum(
-                        episode_done_env
-                    )
-                    confidence_episode_counts = jnp.where(
-                        episode_done_env,
-                        0.0,
-                        confidence_episode_counts,
-                    )
-
                 # jax.debug.print("check6 {x}", x=hstate.flatten()[0])
 
                 env_step_state = (
@@ -830,13 +701,9 @@ def make_train(
                     population_hstate,
                     new_population_annealing_mask,
                     new_fcp_pop_agent_idxs,
-                    confidence_counters,
-                    confidence_episode_counts,
                     obs_history,
                     act_history,
                     last_partner_action,
-                    completed_trigger_sum,
-                    completed_episode_count,
                     rng,
                 )
                 return env_step_state, transition
@@ -851,13 +718,9 @@ def make_train(
                 initial_population_hstate,
                 last_population_annealing_mask,
                 initial_fcp_pop_agent_idxs,
-                confidence_counters,
-                confidence_episode_counts,
                 obs_history,
                 act_history,
                 last_partner_action,
-                jnp.zeros((), dtype=jnp.float32),  # completed trigger sum (per update)
-                jnp.zeros((), dtype=jnp.float32),  # completed episode count (per update)
                 rng,
             )
             env_step_state, traj_batch = jax.lax.scan(
@@ -873,13 +736,9 @@ def make_train(
                 next_population_hstate,
                 last_population_annealing_mask,
                 next_fcp_pop_agent_idxs,
-                confidence_counters,
-                confidence_episode_counts,
                 obs_history,
                 act_history,
                 last_partner_action,
-                completed_trigger_sum,
-                completed_episode_count,
                 rng,
             ) = env_step_state
 
@@ -1244,23 +1103,11 @@ def make_train(
             metric = traj_batch.info
 
             # --------------------------------------------------------------
-            # confidence/entropy 통계 파생 메트릭
+            # entropy 통계 파생 메트릭
             #   - policy_entropy_mean: rollout 전체 평균 엔트로피
-            #   - confidence_trigger_per_episode: (이번 업데이트 내 완료된 episode의 트리거 평균 횟수)
-            #   - confidence_trigger_events_sum / confidence_completed_episodes: 분자/분모 디버깅용
             # --------------------------------------------------------------
             if "policy_entropy" in metric:
                 metric["policy_entropy_mean"] = metric["policy_entropy"].mean()
-
-            if use_confidence_trigger:
-                trigger_per_episode = jnp.where(
-                    completed_episode_count > 0,
-                    completed_trigger_sum / completed_episode_count,
-                    0.0,
-                )
-                metric["confidence_trigger_per_episode"] = trigger_per_episode
-                metric["confidence_trigger_events_sum"] = completed_trigger_sum
-                metric["confidence_completed_episodes"] = completed_episode_count
 
             # 손실 함수 관련 메트릭 추출
             total_loss, aux_data = loss_info
@@ -1277,23 +1124,6 @@ def make_train(
 
             # 모든 메트릭 값을 배치/스텝 차원에 대해 평균 계산 (스칼라로 축약)
             metric = jax.tree_util.tree_map(lambda x: x.mean(), metric)
-
-            # confidence 관련 핵심 메트릭은 항상 존재하도록 별도 스칼라 추가
-            if use_confidence_trigger:
-                metric["confidence_trigger_rate"] = metric.get(
-                    "confidence_trigger", jnp.array(0.0, dtype=jnp.float32)
-                )
-                metric["confidence_cooldown_mean"] = metric.get(
-                    "confidence_cooldown", jnp.array(0.0, dtype=jnp.float32)
-                )
-                metric["random_step_active_rate"] = metric.get(
-                    "random_step_active", jnp.array(0.0, dtype=jnp.float32)
-                )
-            else:
-                zero = jnp.array(0.0, dtype=jnp.float32)
-                metric["confidence_trigger_rate"] = zero
-                metric["confidence_cooldown_mean"] = zero
-                metric["random_step_active_rate"] = zero
 
             # 업데이트 스텝 카운터 증가 및 메트릭에 기록
             update_step += 1
@@ -1353,8 +1183,6 @@ def make_train(
                 next_population_hstate,
                 last_population_annealing_mask,
                 next_fcp_pop_agent_idxs,
-                confidence_counters,
-                confidence_episode_counts,
                 obs_history,
                 act_history,
                 last_partner_action,
@@ -1389,15 +1217,6 @@ def make_train(
 
         rng, _rng = jax.random.split(rng)
 
-        # 각 액터 슬롯별로 트리거 잔여 스텝을 추적할 버퍼 초기화
-        confidence_counter_shape = (model_config["NUM_ACTORS"],)
-        initial_confidence_counters = jnp.zeros(
-            confidence_counter_shape, dtype=jnp.int32
-        )
-        initial_confidence_episode_counts = jnp.zeros(
-            (model_config["NUM_ENVS"],), dtype=jnp.float32
-        )
-
         # E3T History Buffers
         initial_obs_history = jnp.zeros((model_config["NUM_ACTORS"], 5, *env.observation_space().shape))
         initial_act_history = jnp.zeros((model_config["NUM_ACTORS"], 5), dtype=jnp.int32)
@@ -1414,8 +1233,6 @@ def make_train(
             init_population_hstate,
             init_population_annealing_mask,
             init_fcp_pop_idxs,
-            initial_confidence_counters,
-            initial_confidence_episode_counts,
             initial_obs_history,
             initial_act_history,
             initial_last_partner_action,

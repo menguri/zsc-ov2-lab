@@ -108,6 +108,20 @@ FCP는 2단계로 진행됩니다.
     sh sh_scripts/run_visualize.sh --gpu 0 --dir runs/20251121-040922_ii3s89wl_demo_cook_wide_avs-2-256-sp --all --no_viz
     ```
 
+## AI-AI Coordination (다른 알고리즘 간 협력)
+
+다른 알고리즘으로 학습된 에이전트들 간의 협력을 평가하기 위해, `runs/` 폴더에 원하는 레이아웃에 대한 각 알고리즘의 run 파일을 `run_0`부터 `run_n` (n+1개 알고리즘을 비교하기 위해)으로 옮겨놓고, 시각화 cross 모드를 사용하여 비교할 수 있습니다.
+
+예를 들어, `grounded_coord_simple` 레이아웃에서 SP, SA, E3T 알고리즘을 비교하려면:
+
+1. 각 알고리즘의 학습 결과를 `runs/`에서 찾아 `run_0`, `run_1`, `run_2` 등으로 이름을 변경하여 같은 디렉토리에 배치합니다.
+2. 시각화 스크립트를 cross 모드로 실행합니다:
+   ```bash
+   sh sh_scripts/run_visualize.sh --gpu <gpu_id> --dir <run_directory> --cross
+   ```
+
+이렇게 하면 서로 다른 알고리즘의 에이전트들이 협력하는 시나리오를 시각화하고 평가할 수 있습니다.
+
 
 
 

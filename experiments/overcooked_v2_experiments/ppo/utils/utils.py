@@ -29,15 +29,6 @@ def _infer_run_suffix(config) -> str:
         if config.get("model", {}).get("anchor", False):
             suffix = f"stl"
 
-    confidence_profile = config.get("CONF_NAME")
-    if confidence_profile and confidence_profile != "disabled":
-        confidence_pretty = confidence_profile.replace("_", "-")
-        # sp-uc, sp-oc 형태로 붙이기 위해 기존 suffix가 sp라면 sp-uc로, 아니면 뒤에 붙임
-        if suffix == "sp":
-            suffix = f"{confidence_pretty}"
-        else:
-            suffix = f"{suffix}-{confidence_pretty}"
-
     return suffix
 
 
