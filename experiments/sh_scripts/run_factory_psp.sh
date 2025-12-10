@@ -1,90 +1,113 @@
-#!/usr/bin/env bash
-# ====== OvercookedV2 panic-sp 전용 실행 스크립트 ======
-# 각 레이아웃별 panic 윈도우 실험만 남김.
-# 공통 옵션: --nenvs 256 --nsteps 256 --panic --panic-start 50 --panic-duration 30 --env-device cpu
-# 필요 시 GPU 할당 조정 가능.
-
-set -euo pipefail
+#!/bin/bash
 
 # Change to script directory
 cd "$(dirname "$0")" || exit 1
 
-# grounded_coord_simple
-./run_user_wandb.sh --gpus 0,1,2,3,4 --env grounded_coord_simple --exp panic-sp \
-	--env-device cpu --nenvs 256 --nsteps 256 \
-	--panic --panic-start 30 --panic-duration 10
+# ==============================================================================
+# PSP Experiment Factory Script
+# Runs PSP (Panic-SP) experiments sequentially on different layouts.
+# ==============================================================================
 
-./run_user_wandb.sh --gpus 0,1,2,3,4 --env grounded_coord_simple --exp panic-sp \
-	--env-device cpu --nenvs 256 --nsteps 256 \
-	--panic --panic-start 30 --panic-duration 5
+# Common Configuration
+EXP="panic-sp"
+ENV_DEVICE="cpu"
+NENVS=256
+NSTEPS=256
 
-./run_user_wandb.sh --gpus 0,1,2,3,4 --env grounded_coord_simple --exp panic-sp \
-	--env-device cpu --nenvs 256 --nsteps 256 \
-	--panic --panic-start 60 --panic-duration 10
+# Function to run experiment
+run_psp() {
+    local gpus=$1
+    local env=$2
+    local layout=$3
+    local panic_start=$4
+    local panic_duration=$5
+    
+    echo "================================================================================"
+    echo "STARTING PSP EXPERIMENT"
+    echo "ENV: $env, LAYOUT: $layout"
+    echo "PANIC START: $panic_start, DURATION: $panic_duration"
+    echo "GPUS: $gpus"
+    echo "================================================================================"
+    
+    local cmd="./run_user_wandb.sh \
+        --gpus $gpus \
+        --env $env \
+        --exp $EXP \
+        --env-device $ENV_DEVICE \
+        --nenvs $NENVS \
+        --nsteps $NSTEPS \
+        --panic \
+        --panic-start $panic_start \
+        --panic-duration $panic_duration"
+        
+    if [ -n "$layout" ]; then
+        cmd="$cmd --layout $layout"
+    fi
+    
+    echo "Executing: $cmd"
+    $cmd
+    
+    echo "================================================================================"
+    echo "FINISHED PSP EXPERIMENT"
+    echo "================================================================================"
+    echo ""
+}
 
-# # grounded_coord_ring
-./run_user_wandb.sh --gpus 0,1,2,3,4 --env grounded_coord_ring --exp panic-sp \
-	--env-device cpu --nenvs 256 --nsteps 256 \
-	--panic --panic-start 30 --panic-duration 10
+# ==============================================================================
+# Execution List (Uncomment lines to run)
+# ==============================================================================
 
-./run_user_wandb.sh --gpus 0,1,2,3,4 --env grounded_coord_ring --exp panic-sp \
-	--env-device cpu --nenvs 256 --nsteps 256 \
-	--panic --panic-start 30 --panic-duration 5
+# Grounded Coord Simple
+run_psp "0,1,2,3,4" "grounded_coord_simple" "" 30 10
+run_psp "0,1,2,3,4" "grounded_coord_simple" "" 30 5
+run_psp "0,1,2,3,4" "grounded_coord_simple" "" 60 10
 
-./run_user_wandb.sh --gpus 0,1,2,3,4 --env grounded_coord_ring --exp panic-sp \
-	--env-device cpu --nenvs 256 --nsteps 256 \
-	--panic --panic-start 60 --panic-duration 10
+# Grounded Coord Ring
+run_psp "0,1,2,3,4" "grounded_coord_ring" "" 30 10
+run_psp "0,1,2,3,4" "grounded_coord_ring" "" 30 5
+run_psp "0,1,2,3,4" "grounded_coord_ring" "" 60 10
 
-# # demo_cook_simple
-./run_user_wandb.sh --gpus 0,1,2,3,4 --env demo_cook_simple --exp panic-sp \
-	--env-device cpu --nenvs 256 --nsteps 256 \
-	--panic --panic-start 30 --panic-duration 10
+# Demo Cook Simple
+run_psp "0,1,2,3,4" "demo_cook_simple" "" 30 10
+run_psp "0,1,2,3,4" "demo_cook_simple" "" 30 5
+run_psp "0,1,2,3,4" "demo_cook_simple" "" 60 10
 
-./run_user_wandb.sh --gpus 0,1,2,3,4 --env demo_cook_simple --exp panic-sp \
-	--env-device cpu --nenvs 256 --nsteps 256 \
-	--panic --panic-start 30 --panic-duration 5
+# Demo Cook Wide
+run_psp "0,1,2,3,4" "demo_cook_wide" "" 30 10
+run_psp "0,1,2,3,4" "demo_cook_wide" "" 30 5
+run_psp "0,1,2,3,4" "demo_cook_wide" "" 60 10
 
-./run_user_wandb.sh --gpus 0,1,2,3,4 --env demo_cook_simple --exp panic-sp \
-	--env-device cpu --nenvs 256 --nsteps 256 \
-	--panic --panic-start 60 --panic-duration 10
+# Test Time Simple
+run_psp "0,1,2,3,4" "test_time_simple" "" 30 10
+run_psp "0,1,2,3,4" "test_time_simple" "" 30 5
+run_psp "0,1,2,3,4" "test_time_simple" "" 60 10
 
-# # demo_cook_wide
-./run_user_wandb.sh --gpus 0,1,2,3,4 --env demo_cook_wide --exp panic-sp \
-	--env-device cpu --nenvs 256 --nsteps 256 \
-	--panic --panic-start 30 --panic-duration 10
+# Test Time Wide
+run_psp "0,1,2,3,4" "test_time_wide" "" 30 10
+run_psp "0,1,2,3,4" "test_time_wide" "" 30 5
+run_psp "0,1,2,3,4" "test_time_wide" "" 60 10
 
-./run_user_wandb.sh --gpus 0,1,2,3,4 --env demo_cook_wide --exp panic-sp \
-	--env-device cpu --nenvs 256 --nsteps 256 \
-	--panic --panic-start 30 --panic-duration 5
+# Cramped Room (Original)
+run_psp "0,1,2,3,4" "cramped_room" "" 30 10
+run_psp "0,1,2,3,4" "cramped_room" "" 30 5
+run_psp "0,1,2,3,4" "cramped_room" "" 60 10
 
-./run_user_wandb.sh --gpus 0,1,2,3,4 --env demo_cook_wide --exp panic-sp \
-	--env-device cpu --nenvs 256 --nsteps 256 \
-	--panic --panic-start 60 --panic-duration 10
+# Asymmetric Advantages (Original)
+run_psp "0,1,2,3,4" "asymm_advantages" "" 30 10
+run_psp "0,1,2,3,4" "asymm_advantages" "" 30 5
+run_psp "0,1,2,3,4" "asymm_advantages" "" 60 10
 
-# test_time_simple
-./run_user_wandb.sh --gpus 0,1,2,3,4 --env test_time_simple --exp panic-sp \
-	--env-device cpu --nenvs 256 --nsteps 256 \
-	--panic --panic-start 30 --panic-duration 10
+# Coordination Ring (Original)
+run_psp "0,1,2,3,4" "coord_ring" "" 30 10
+run_psp "0,1,2,3,4" "coord_ring" "" 30 5
+run_psp "0,1,2,3,4" "coord_ring" "" 60 10
 
-./run_user_wandb.sh --gpus 0,1,2,3,4 --env test_time_simple --exp panic-sp \
-	--env-device cpu --nenvs 256 --nsteps 256 \
-	--panic --panic-start 30 --panic-duration 5
+# Forced Coordination (Original)
+run_psp "0,1,2,3,4" "forced_coord" "" 30 10
+run_psp "0,1,2,3,4" "forced_coord" "" 30 5
+run_psp "0,1,2,3,4" "forced_coord" "" 60 10
 
-./run_user_wandb.sh --gpus 0,1,2,3,4 --env test_time_simple --exp panic-sp \
-	--env-device cpu --nenvs 256 --nsteps 256 \
-	--panic --panic-start 60 --panic-duration 10
-
-# # test_time_wide
-./run_user_wandb.sh --gpus 0,1,2,3,4 --env test_time_wide --exp panic-sp \
-	--env-device cpu --nenvs 256 --nsteps 256 \
-	--panic --panic-start 30 --panic-duration 10
-
-./run_user_wandb.sh --gpus 0,1,2,3,4 --env test_time_wide --exp panic-sp \
-	--env-device cpu --nenvs 256 --nsteps 256 \
-	--panic --panic-start 30 --panic-duration 5
-
-./run_user_wandb.sh --gpus 0,1,2,3,4 --env test_time_wide --exp panic-sp \
-	--env-device cpu --nenvs 256 --nsteps 256 \
-	--panic --panic-start 60 --panic-duration 10
-
-echo "[panic-sp] 모든 레이아웃 실행 커맨드 준비 완료"
+# Counter Circuit (Original)
+run_psp "0,1,2,3,4" "counter_circuit" "" 30 10
+run_psp "0,1,2,3,4" "counter_circuit" "" 30 5
+run_psp "0,1,2,3,4" "counter_circuit" "" 60 10

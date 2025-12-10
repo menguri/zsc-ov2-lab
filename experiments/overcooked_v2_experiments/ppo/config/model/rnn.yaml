@@ -3,6 +3,7 @@
 "GRU_HIDDEN_DIM": 128
 "CNN_FEATURES": 32
 "ACTIVATION": "relu"
+"anchor": False
 
 # "LR": 5e-4
 # "TOTAL_TIMESTEPS": 1e7

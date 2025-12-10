@@ -44,6 +44,7 @@ class Transition(NamedTuple):
     act_history: jnp.ndarray
     partner_action: jnp.ndarray
     is_ego: jnp.ndarray
+    z_state: jnp.ndarray
 
 
 def batchify(x: dict, agent_list, num_actors):
@@ -261,7 +262,10 @@ def make_train(
         init_hstate = initialize_carry(config, model_config["NUM_ENVS"])
 
         if init_hstate is not None:
-            print("init_hstate", init_hstate.shape)
+            if isinstance(init_hstate, tuple):
+                print("init_hstate (tuple)", [x.shape for x in init_hstate])
+            else:
+                print("init_hstate", init_hstate.shape)
         # jax.debug.print("check1 {x}", x=init_hstate.flatten()[0])
 
         print("init_x", init_x[0].shape, init_x[1].shape)
@@ -274,8 +278,9 @@ def make_train(
         if alg_name == "E3T" and use_partner_modeling:
              # Shape: (Time=1, Batch=NUM_ENVS, ActionDim=6)
              dummy_partner_prediction = jnp.zeros((1, model_config["NUM_ENVS"], ACTION_DIM))
-             dummy_obs_hist = jnp.zeros((1, 5, *env.observation_space().shape))
-             dummy_act_hist = jnp.zeros((1, 5), dtype=jnp.int32)
+             # Shape: (1, Batch, Context=5, H, W, C)
+             dummy_obs_hist = jnp.zeros((1, model_config["NUM_ENVS"], 5, *env.observation_space().shape))
+             dummy_act_hist = jnp.zeros((1, model_config["NUM_ENVS"], 5), dtype=jnp.int32)
 
         # Single Init: Initialize all parameters at once to avoid collision
         # 단일 초기화: 파라미터 충돌 방지를 위해 모든 모듈을 한 번에 초기화
@@ -401,6 +406,17 @@ def make_train(
                     rng,
                 ) = env_step_state
 
+                # Calculate actor indices and is_ego
+                actor_indices = jnp.repeat(
+                    jnp.arange(env.num_agents, dtype=jnp.int32), model_config["NUM_ENVS"]
+                )
+                is_ego = actor_indices == 0
+
+                # Capture z_state from input hstate (before update) for storage
+                z_state_in = jnp.zeros((model_config["NUM_ACTORS"], ACTION_DIM))
+                if isinstance(hstate, tuple):
+                    _, z_state_in = hstate
+
                 # jax.debug.print("check4 {x}", x=hstate.flatten()[0])
 
                 # SELECT ACTION
@@ -441,8 +457,16 @@ def make_train(
                 # 2. Partner Prediction
                 partner_prediction = None
                 if alg_name == "E3T" and use_partner_modeling:
+                    # Extract z_state if available
+                    z_in = None
+                    if isinstance(hstate, tuple):
+                        _, z_in = hstate
+                        # z_in is (Batch, Dim)
+                    
+                    anchor_val = config.get("model", {}).get("anchor", False)
+
                     # (1) 실제 파트너 예측 (Ego용)
-                    real_prediction = network.apply(train_state.params, obs_history, act_history, method='predict_partner')
+                    real_prediction = network.apply(train_state.params, obs_history, act_history, z_state=z_in, anchor=anchor_val, method='predict_partner')
                     
                     # (2) 무작위 행동 임베딩 (Partner용)
                     # 파트너는 Ego를 예측하지 않고, 무작위 행동(또는 노이즈)을 조건으로 받아 자신의 정책을 수행한다고 가정
@@ -642,10 +666,13 @@ def make_train(
                     actual_partner_action = jax.lax.select(mix_mask, rand_action, action_for_env.squeeze())
                     
                     # 5. 환경에 전달할 행동 업데이트
-                    # Fix: Force int32 type and squeeze if necessary
+                    # Fix: Force int32 type
                     action_for_env = actual_partner_action.astype(jnp.int32)
-                    if len(action_for_env.shape) > 1:
-                        action_for_env = action_for_env.squeeze()
+
+                # Ensure action_for_env is squeezed (NUM_ACTORS,) to match carry shape
+                # This fixes the scan carry shape mismatch error (int32[512] vs int32[1,512])
+                if len(action_for_env.shape) > 1:
+                    action_for_env = action_for_env.squeeze()
 
                 # Update last_partner_action for next step history
                 last_partner_action = action_for_env
@@ -758,6 +785,7 @@ def make_train(
                     act_history,
                     current_partner_action,
                     is_ego,
+                    z_state_in,
                 )
 
                 if use_confidence_trigger:
@@ -935,7 +963,10 @@ def make_train(
                     def _loss_fn(params, init_hstate, traj_batch, gae, targets):
                         hstate = init_hstate
                         if hstate is not None:
-                            hstate = hstate.squeeze(axis=0)
+                            if isinstance(hstate, tuple):
+                                hstate = tuple(x.squeeze(axis=0) for x in hstate)
+                            else:
+                                hstate = hstate.squeeze(axis=0)
                             # hstate = jax.lax.stop_gradient(hstate)
 
                         train_mask = True
@@ -951,41 +982,69 @@ def make_train(
 
                         if alg_name == "E3T" and use_partner_modeling:
                             # 1. Forward Pass for Prediction
-                            # traj_batch.obs_history: (Time, Batch, 5, H, W, C)
-                            # traj_batch.act_history: (Time, Batch, 5)
+                            # PPO 미니배치는 셔플되어 시간 연속성이 없으므로 Scan을 사용할 수 없습니다.
+                            # 따라서 단일 스텝 예측(predict_partner)을 사용합니다.
                             
-                            # Flatten Time and Batch dimensions for network input
-                            T, B = traj_batch.obs_history.shape[:2]
-                            obs_hist_flat = traj_batch.obs_history.reshape(T * B, *traj_batch.obs_history.shape[2:])
-                            act_hist_flat = traj_batch.act_history.reshape(T * B, *traj_batch.act_history.shape[2:])
+                            # traj_batch.obs_history: (Minibatch, 5, H, W, C)
+                            # traj_batch.act_history: (Minibatch, 5)
+                            obs_hist_flat = traj_batch.obs_history
+                            act_hist_flat = traj_batch.act_history
                             
-                            # Predict Partner Action (파트너 행동 예측)
-                            # obs_history와 act_history를 사용하여 파트너의 다음 행동을 예측합니다.
-                            pred_logits = network.apply(params, obs_hist_flat, act_hist_flat, method='predict_partner')
+                            # --------------------------------------------------------------
+                            # [STL Implementation] Train-Inference Mismatch Resolution
+                            # --------------------------------------------------------------
+                            # 1. Prediction Loss (Encoder Training) -> anchor=False
+                            # 인코더는 Locking 없이 Raw Intent를 잘 예측하도록 학습합니다.
+                            # z_state는 Rollout 시점의 값을 사용하여 일관성을 유지합니다.
+                            pred_logits_raw = network.apply(params, obs_hist_flat, act_hist_flat, z_state=traj_batch.z_state, anchor=False, method='predict_partner')
                             
-                            # 2. Label Matching
-                            target_labels = traj_batch.partner_action.reshape(T * B).astype(jnp.int32)
+                            # 2. Policy Input (Actor Training) -> anchor=Config
+                            # 정책 네트워크는 Rollout 시 보았던 것과 동일한 입력(z_locked)을 받아야 합니다.
+                            # 하지만 미니배치 학습 시에는 전체 Trajectory를 재구성할 수 없으므로(Shuffle됨),
+                            # 여기서는 anchor=True 옵션만 적용하여 단일 스텝 예측을 수행합니다.
+                            # (완벽한 z_locked 재현은 불가능하지만, 차원 오류는 해결됩니다.)
+                            anchor_val = config.get("model", {}).get("anchor", False)
                             
-                            # 3. Compute Cross-Entropy Loss (예측 손실 계산)
-                            pred_loss_vec = optax.softmax_cross_entropy_with_integer_labels(logits=pred_logits, labels=target_labels)
+                            if anchor_val:
+                                # anchor=True로 단일 스텝 예측
+                                pred_logits_policy = network.apply(
+                                    params, 
+                                    obs_hist_flat, 
+                                    act_history=act_hist_flat, 
+                                    z_state=traj_batch.z_state, 
+                                    anchor=True, 
+                                    method='predict_partner'
+                                )
+                            else:
+                                pred_logits_policy = pred_logits_raw
+
+                            # 2. Label Matching & Loss Calculation
+                            # 예측값: (Minibatch, ActionDim)
+                            pred_logits_flat = pred_logits_raw
+                            
+                            # 정답값: (Minibatch,)
+                            target_labels_flat = traj_batch.partner_action.astype(jnp.int32)
+                            
+                            # 3. Compute Cross-Entropy Loss (예측 손실 계산 - Raw 기준)
+                            pred_loss_vec = optax.softmax_cross_entropy_with_integer_labels(logits=pred_logits_flat, labels=target_labels_flat)
                             
                             # [E3T] Masking: Only Ego agents contribute to prediction loss
-                            # Ego 에이전트만 예측 손실에 기여하도록 마스킹 (Partner는 랜덤 행동을 하므로 예측 불가/불필요)
-                            is_ego_flat = traj_batch.is_ego.reshape(T * B)
+                            is_ego_flat = traj_batch.is_ego
                             pred_loss = (pred_loss_vec * is_ego_flat).sum() / (is_ego_flat.sum() + 1e-8)
                             
                             # Apply Coefficient
                             pred_loss = pred_loss * config.get("PRED_LOSS_COEF", 1.0)
                             
                             # Calculate Accuracy
-                            pred_labels = jnp.argmax(pred_logits, axis=-1)
-                            pred_accuracy = jnp.mean(pred_labels == target_labels)
+                            pred_labels = jnp.argmax(pred_logits_flat, axis=-1)
+                            pred_accuracy = jnp.mean(pred_labels == target_labels_flat)
                             
                             # 4. Stop Gradient for Ego Policy (Actor 입력용)
                             # Actor-Critic 네트워크에 입력으로 주기 위해 gradient를 차단합니다.
-                            # 이는 PPO 손실이 예측 네트워크를 업데이트하지 않도록 하기 위함입니다.
-                            partner_prediction_flat = jax.lax.stop_gradient(pred_logits)
-                            partner_prediction = partner_prediction_flat.reshape(T, B, -1)
+                            partner_prediction_flat = jax.lax.stop_gradient(pred_logits_policy)
+                            # (Minibatch, ActionDim) -> (Minibatch, 1, ActionDim) for Actor Input (if needed)
+                            # 하지만 Actor는 (Batch, ...)를 기대하므로 (Minibatch, 1, ActionDim)으로 확장
+                            partner_prediction = partner_prediction_flat[:, jnp.newaxis, :]
 
                         # RERUN NETWORK
                         # Actor-Critic 네트워크 재실행 (Value, Policy 계산)
@@ -1107,9 +1166,14 @@ def make_train(
 
                 hstate = init_hstate
                 if hstate is not None:
-                    print("hstate shape", hstate.shape)
-                    hstate = hstate[jnp.newaxis, :]
-                    print("hstate shape", hstate.shape)
+                    if isinstance(hstate, tuple):
+                        # print("hstate shape (tuple)", [x.shape for x in hstate])
+                        hstate = tuple(x[jnp.newaxis, :] for x in hstate)
+                        # print("hstate shape (tuple)", [x.shape for x in hstate])
+                    else:
+                        # print("hstate shape", hstate.shape)
+                        hstate = hstate[jnp.newaxis, :]
+                        # print("hstate shape", hstate.shape)
 
                 batch = (
                     hstate,

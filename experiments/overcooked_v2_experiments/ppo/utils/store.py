@@ -80,6 +80,7 @@ def load_checkpoint(run_dir, run_num, checkpoint):
 def load_all_checkpoints(run_dir, final_only=True, skip_initial=False):
     first_config = None
     all_checkpoints = {}
+    configs = {}
     for run_num_dir in run_dir.iterdir():
         print(f"[DEBUG] Examining directory: {run_num_dir.name}")
         if not run_num_dir.is_dir() or "run_" not in run_num_dir.name:
@@ -107,5 +108,6 @@ def load_all_checkpoints(run_dir, final_only=True, skip_initial=False):
             if not first_config:
                 first_config = config
         all_checkpoints[run_num_dir.name] = checkpoints
+        configs[run_num_dir.name] = config
         print(f"[DEBUG] Loaded {len(checkpoints)} checkpoints for {run_num_dir.name}")
-    return all_checkpoints, first_config
+    return all_checkpoints, first_config, configs

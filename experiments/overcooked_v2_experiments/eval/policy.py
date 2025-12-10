@@ -10,18 +10,19 @@ from flax import struct
 class AbstractPolicy(abc.ABC):
     @abc.abstractmethod
     @partial(jax.jit, static_argnums=(0,))
-    def compute_action(self, obs, done, hstate, key) -> Tuple[int, chex.Array]:
+    def compute_action(self, obs, done, hstate, key, **kwargs) -> Tuple[int, chex.Array, dict]:
         """
-        Compute an action given an observation, done flag, hidden state, and random key.
+        관측값, 완료 플래그, 은닉 상태, 랜덤 키가 주어졌을 때 행동을 계산합니다.
 
         Args:
-            obs (chex.Array): The observation.
-            done (chex.Array): The done flag.
-            hstate (chex.Array): The hidden state.
-            key (chex.Array): The random key.
+            obs (chex.Array): 관측값.
+            done (chex.Array): 완료 플래그.
+            hstate (chex.Array): 은닉 상태.
+            key (chex.Array): 랜덤 키.
+            **kwargs: obs_history, act_history와 같은 추가적인 인자들.
 
         Returns:
-            Tuple[int, chex.Array]: A tuple containing the action and the new hidden state.
+            Tuple[int, chex.Array, dict]: 행동, 새로운 은닉 상태, 추가 정보를 포함하는 튜플.
         """
 
         pass

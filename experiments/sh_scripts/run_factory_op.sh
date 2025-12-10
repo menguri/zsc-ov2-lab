@@ -1,53 +1,93 @@
-# # ====== OvercookedV2 - layout별 실행 명령 (GPU:0) ======
+#!/bin/bash
 
 # Change to script directory
 cd "$(dirname "$0")" || exit 1
 
-# --------------------------------------------------------------------
-# original — layout: cramped_room  → CNN ONLY
-# --------------------------------------------------------------------
-# ./run_user_wandb.sh --gpus 6 --env original --layout cramped_room --exp cnn --env-device cpu --nenvs 128 --nsteps 128
-# # sa (iterations=10)
-# ./run_user_wandb.sh --gpus 6 --env original --layout cramped_room --exp cnn --iterations 10 --env-device cpu --nenvs 128 --nsteps 128
-# ./run_user_wandb.sh --gpus 6 --env original --layout cramped_room --exp rnn-op --env-device cpu --nenvs 256 --nsteps 256
-# --------------------------------------------------------------------
-# grounded_coord_simple — 고정 레이아웃
-# --------------------------------------------------------------------
-# sp
-# ./run_user_wandb.sh --gpus 1 --env grounded_coord_simple --exp rnn-sp --env-device cpu --nenvs 256 --nsteps 256
-# # op
-# ./run_user_wandb.sh --gpus 4,5 --env grounded_coord_simple --exp rnn-op --env-device cpu --nenvs 256 --nsteps 256
-# # sa (iterations=10)
-# ./run_user_wandb.sh --gpus 4 --env grounded_coord_simple --exp rnn-sa --iterations 10 --env-device cpu --nenvs 256 --nsteps 256
-# # fcp (population 준비 필요: --fcp 경로 교체) - FCP는 메모리 사용량이 높아 nenvs 64로 감소
-# ./run_user_wandb.sh --gpus 0 --env grounded_coord_simple --exp rnn-fcp --fcp fcp_populations/grounded_coord_simple --env-device cpu --nenvs 256 --nsteps 256
+# ==============================================================================
+# OP Experiment Factory Script
+# Runs OP experiments sequentially on different layouts.
+# ==============================================================================
 
-# --------------------------------------------------------------------
-# grounded_coord_ring — 고정 레이아웃
-# --------------------------------------------------------------------
-# ./run_user_wandb.sh --gpus 4 --env grounded_coord_ring --exp rnn-sp --env-device cpu --nenvs 256 --nsteps 256
-# ./run_user_wandb.sh --gpus 4 --env grounded_coord_ring --exp rnn-sa --iterations 10 --env-device cpu --nenvs 256 --nsteps 256
-./run_user_wandb.sh --gpus 4,5 --env grounded_coord_ring --exp rnn-op --env-device cpu --nenvs 256 --nsteps 256
-# ./run_user_wandb.sh --gpus 0 --env grounded_coord_ring --exp rnn-fcp --fcp fcp_populations/grounded_coord_ring --env-device cpu --nenvs 256 --nsteps 256
+# Common Configuration
+EXP="rnn-op"
+ENV_DEVICE="cpu"
+NENVS=256
+NSTEPS=256
 
-# --------------------------------------------------------------------
-# demo_cook_simple — 고정 레이아웃
-# --------------------------------------------------------------------
-# ./run_user_wandb.sh --gpus 1 --env demo_cook_simple --exp rnn-sp --env-device cpu --nenvs 256 --nsteps 256
-# ./run_user_wandb.sh --gpus 4,5 --env demo_cook_simple --exp rnn-op --env-device cpu --nenvs 256 --nsteps 256
-# ./run_user_wandb.sh --gpus 5 --env demo_cook_simple --exp rnn-sa --iterations 10 --env-device cpu --nenvs 256 --nsteps 256
-# ./run_user_wandb.sh --gpus 0 --env demo_cook_simple --exp rnn-fcp --fcp fcp_populations/demo_cook_simple --env-device cpu --nenvs 256 --nsteps 256
+# Function to run experiment
+run_op() {
+    local gpus=$1
+    local env=$2
+    local layout=$3
+    
+    echo "================================================================================"
+    echo "STARTING OP EXPERIMENT"
+    echo "ENV: $env, LAYOUT: $layout"
+    echo "GPUS: $gpus"
+    echo "================================================================================"
+    
+    local cmd="./run_user_wandb.sh \
+        --gpus $gpus \
+        --env $env \
+        --exp $EXP \
+        --env-device $ENV_DEVICE \
+        --nenvs $NENVS \
+        --nsteps $NSTEPS"
+        
+    if [ -n "$layout" ]; then
+        cmd="$cmd --layout $layout"
+    fi
+    
+    echo "Executing: $cmd"
+    $cmd
+    
+    echo "================================================================================"
+    echo "FINISHED OP EXPERIMENT"
+    echo "================================================================================"
+    echo ""
+}
 
-# --------------------------------------------------------------------
-# demo_cook_wide — 고정 레이아웃
-# --------------------------------------------------------------------
-# ./run_user_wandb.sh --gpus 3 --env demo_cook_wide --exp rnn-sp --env-device cpu --nenvs 256 --nsteps 256
-# ./run_user_wandb.sh --gpus 3 --env demo_cook_wide --exp rnn-sa --iterations 10 --env-device cpu --nenvs 256 --nsteps 256
-# ./run_user_wandb.sh --gpus 4,5 --env demo_cook_wide --exp rnn-op --env-device cpu --nenvs 256 --nsteps 256
-# ./run_user_wandb.sh --gpus 0 --env demo_cook_wide --exp rnn-fcp --fcp fcp_populations/demo_cook_wide --env-device cpu --nenvs 256 --nsteps 256
+# ==============================================================================
+# Execution List (Uncomment lines to run)
+# ==============================================================================
 
-# # --------------------------------------------------------------------
-# # test_time_simple — 고정 레이아웃
+# # 1. Grounded Coord Simple
+# run_op "0,1,2,3,4" "grounded_coord_simple" ""
+
+# # 2. Grounded Coord Ring
+# run_op "0,1,2,3,4" "grounded_coord_ring" ""
+
+# 3. Demo Cook Simple
+run_op "0,1,2,3,4" "demo_cook_simple" ""
+
+# # 4. Demo Cook Wide
+# run_op "0,1,2,3,4" "demo_cook_wide" ""
+
+# # 5. Test Time Simple
+# run_op "0,1,2,3,4" "test_time_simple" ""
+
+# # 6. Test Time Wide
+# run_op "0,1,2,3,4" "test_time_wide" ""
+
+# # 7. Cramped Room (Original)
+# run_op "6,7" "cramped_room" ""
+
+# # 8. Asymmetric Advantages (Original)
+# run_op "6,7" "asymm_advantages" ""
+
+# # 9. Coordination Ring (Original)
+# run_op "6,7" "coord_ring" ""
+
+# # 10. Forced Coordination (Original)
+# run_op "6,7" "forced_coord" ""
+
+# # 11. Counter Circuit (Original)
+# run_op "6,7" "counter_circuit" ""
+
+
+
+
+
 # # --------------------------------------------------------------------
 # ./run_user_wandb.sh --gpus 7 --env test_time_simple --exp rnn-sp --env-device cpu --nenvs 256 --nsteps 256
 # ./run_user_wandb.sh --gpus 2 --env test_time_simple --exp rnn-sa --iterations 10 --env-device cpu --nenvs 128 --nsteps 128
