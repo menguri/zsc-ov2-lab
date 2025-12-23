@@ -1,0 +1,10 @@
+# @package _global_
+defaults:
+  - override /model: rnn
+
+DIAYN:
+  ENABLED: true
+  NUM_SKILLS: 5
+  DISCRIMINATOR_LR: 3e-4
+  DISCRIMINATOR_HIDDEN_DIMS: [256, 256]
+  INTRINSIC_REWARD_SCALE: 1.0

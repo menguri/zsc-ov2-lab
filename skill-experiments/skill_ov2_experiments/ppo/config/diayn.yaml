@@ -1,0 +1,9 @@
+# @package _global_
+
+DIAYN:
+  ENABLED: true
+  NUM_SKILLS: 20
+  DISCRIMINATOR_LR: 3e-4
+  DISCRIMINATOR_HIDDEN_DIMS: [256, 256]
+  INTRINSIC_REWARD_SCALE: 1.0
+  UPDATE_FREQ: 1  # Discriminator 업데이트 빈도 (PPO 업데이트 대비)
