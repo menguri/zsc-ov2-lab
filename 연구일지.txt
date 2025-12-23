@@ -8,7 +8,6 @@
 [7] pmap에서 그 안에 시드 축을 넣으면, shape 잘 관리 못할시엔 섞일 수가 있음. 시드당 train을 jit 시키고, 그 호출을 바깥에서 잘라서 pmap 병렬화 시켜야 함.
 
 
-
 (실험) nenvs/nsteps를 256/256으로 잡고, 한번 싹 실험해야 할듯
 - grounded: sp
 - demo: st
@@ -18,6 +17,8 @@
 agent를 index=0으로 두냐, index=1로 두냐에 따라 차이가 있음.
 E3T에서도 index 섞지 않고 한 곳만 E3T, 나머지를 test agent로 채웠음.
 partner에 대해 random policy를 주는데, 이 파트너의 stating position이 swap될지도 봐야함.
+[8] index switch하는 과정 필요할 듯(E3T, FCP 같이 파트너가 전략이 바뀌는 알고리즘 경우)
+- 왜냐하면 안 뒤집어서 왼/오에서 성능차이 발생함.
 (asymmetric layout에서!)
  
 [jax 캐시 클리어]
