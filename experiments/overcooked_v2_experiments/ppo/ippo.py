@@ -45,6 +45,7 @@ class Transition(NamedTuple):
     partner_action: jnp.ndarray
     is_ego: jnp.ndarray
     z_state: jnp.ndarray
+    prev_action: jnp.ndarray
 
 
 def batchify(x: dict, agent_list, num_actors):
@@ -354,6 +355,8 @@ def make_train(
                 obs_history,
                 act_history,
                 last_partner_action,
+                last_action,
+                ego_idxs,
                 rng,
             ) = runner_state
 
@@ -374,14 +377,36 @@ def make_train(
                     obs_history,
                     act_history,
                     last_partner_action,
+                    last_action,
+                    ego_idxs,
                     rng,
                 ) = env_step_state
+
+                # [E3T] Dynamic Ego Assignment Logic
+                # Check episode completion using last_done
+                # last_done is (NUM_ACTORS,), reshaped to check env-wise done
+                # OvercookedV2 agents terminate simultaneously
+                last_done_reshaped = last_done.reshape(env.num_agents, model_config["NUM_ENVS"])
+                episode_done = last_done_reshaped[0] # (NUM_ENVS,)
+
+                rng, _rng = jax.random.split(rng)
+                new_random_idxs = jax.random.randint(_rng, (model_config["NUM_ENVS"],), 0, env.num_agents)
+
+                # Update ego_idxs only for environments that just finished
+                ego_idxs = jnp.where(episode_done, new_random_idxs, ego_idxs)
 
                 # Calculate actor indices and is_ego
                 actor_indices = jnp.repeat(
                     jnp.arange(env.num_agents, dtype=jnp.int32), model_config["NUM_ENVS"]
                 )
-                is_ego = actor_indices == 0
+                
+                # Expand ego_idxs (NUM_ENVS,) to match actor_indices (NUM_ACTORS,)
+                # actor_indices is [0...0, 1...1] (Agent-Major)
+                # target_ego_idxs should be [e0...en, e0...en]
+                target_ego_idxs = jnp.tile(ego_idxs, env.num_agents)
+                
+                is_ego = (actor_indices == target_ego_idxs)
+                partner_actor_mask = ~is_ego
 
                 # Capture z_state from input hstate (before update) for storage
                 z_state_in = jnp.zeros((model_config["NUM_ACTORS"], ACTION_DIM))
@@ -434,10 +459,10 @@ def make_train(
                         _, z_in = hstate
                         # z_in is (Batch, Dim)
                     
-                    anchor_val = config.get("model", {}).get("anchor", False)
+                    # anchor removed
 
                     # (1) 실제 파트너 예측 (Ego용)
-                    real_prediction = network.apply(train_state.params, obs_history, act_history, z_state=z_in, anchor=anchor_val, method='predict_partner')
+                    real_prediction = network.apply(train_state.params, obs_history, act_history, z_state=z_in, method='predict_partner')
                     
                     # (2) 무작위 행동 임베딩 (Partner용)
                     # 파트너는 Ego를 예측하지 않고, 무작위 행동(또는 노이즈)을 조건으로 받아 자신의 정책을 수행한다고 가정
@@ -451,7 +476,7 @@ def make_train(
                     
                     # (3) Ego vs Partner 구분하여 입력 선택
                     # Ego(Agent 0)는 예측값 사용, Partner(Agent 1)는 무작위 입력 사용
-                    is_ego = (actor_indices == 0)
+                    # is_ego = (actor_indices == 0) # Removed: using dynamic is_ego calculated above
                     
                     # real_prediction: (Batch, 6)
                     # rand_pred_input: (Batch, 6)
@@ -536,7 +561,9 @@ def make_train(
                             population_hstate,
                         )
 
-                    action_pick_mask = train_mask_flat
+                    # action_pick_mask = train_mask_flat
+                    # [Fix] FCP에서도 매 에피소드 랜덤하게 Ego/Partner 역할을 바꾸기 위해 is_ego를 사용
+                    action_pick_mask = is_ego
                     if use_population_annealing:
                         action_pick_mask = _make_train_mask(population_annealing_mask)
 
@@ -687,6 +714,7 @@ def make_train(
                     current_partner_action,
                     is_ego,
                     z_state_in,
+                    last_action,
                 )
 
                 # jax.debug.print("check6 {x}", x=hstate.flatten()[0])
@@ -704,6 +732,8 @@ def make_train(
                     obs_history,
                     act_history,
                     last_partner_action,
+                    last_partner_action,
+                    ego_idxs,
                     rng,
                 )
                 return env_step_state, transition
@@ -721,6 +751,8 @@ def make_train(
                 obs_history,
                 act_history,
                 last_partner_action,
+                last_action,
+                ego_idxs,
                 rng,
             )
             env_step_state, traj_batch = jax.lax.scan(
@@ -739,6 +771,8 @@ def make_train(
                 obs_history,
                 act_history,
                 last_partner_action,
+                next_last_action,
+                next_ego_idxs,
                 rng,
             ) = env_step_state
 
@@ -850,36 +884,19 @@ def make_train(
                             act_hist_flat = traj_batch.act_history
                             
                             # --------------------------------------------------------------
-                            # [STL Implementation] Train-Inference Mismatch Resolution
+                            # [E3T Implementation] Partner Prediction Loss
                             # --------------------------------------------------------------
-                            # 1. Prediction Loss (Encoder Training) -> anchor=False
-                            # 인코더는 Locking 없이 Raw Intent를 잘 예측하도록 학습합니다.
-                            # z_state는 Rollout 시점의 값을 사용하여 일관성을 유지합니다.
-                            pred_logits_raw = network.apply(params, obs_hist_flat, act_hist_flat, z_state=traj_batch.z_state, anchor=False, method='predict_partner')
+                            # 인코더는 파트너의 다음 행동을 예측하도록 학습합니다.
+                            # z_state는 Rollout 시점의 값을 사용하여 일관성을 유지합니다 (Carry state matching).
                             
-                            # 2. Policy Input (Actor Training) -> anchor=Config
-                            # 정책 네트워크는 Rollout 시 보았던 것과 동일한 입력(z_locked)을 받아야 합니다.
-                            # 하지만 미니배치 학습 시에는 전체 Trajectory를 재구성할 수 없으므로(Shuffle됨),
-                            # 여기서는 anchor=True 옵션만 적용하여 단일 스텝 예측을 수행합니다.
-                            # (완벽한 z_locked 재현은 불가능하지만, 차원 오류는 해결됩니다.)
-                            anchor_val = config.get("model", {}).get("anchor", False)
+                            pred_logits = network.apply(params, obs_hist_flat, act_hist_flat, z_state=traj_batch.z_state, method='predict_partner')
                             
-                            if anchor_val:
-                                # anchor=True로 단일 스텝 예측
-                                pred_logits_policy = network.apply(
-                                    params, 
-                                    obs_hist_flat, 
-                                    act_history=act_hist_flat, 
-                                    z_state=traj_batch.z_state, 
-                                    anchor=True, 
-                                    method='predict_partner'
-                                )
-                            else:
-                                pred_logits_policy = pred_logits_raw
+                            # Policy Input (Actor Training) uses the same prediction
+                            pred_logits_policy = pred_logits
 
                             # 2. Label Matching & Loss Calculation
                             # 예측값: (Minibatch, ActionDim)
-                            pred_logits_flat = pred_logits_raw
+                            pred_logits_flat = pred_logits
                             
                             # 정답값: (Minibatch,)
                             target_labels_flat = traj_batch.partner_action.astype(jnp.int32)
@@ -1186,6 +1203,8 @@ def make_train(
                 obs_history,
                 act_history,
                 last_partner_action,
+                next_last_action,
+                next_ego_idxs,
                 rng,
             )
             return runner_state, metric
@@ -1221,6 +1240,10 @@ def make_train(
         initial_obs_history = jnp.zeros((model_config["NUM_ACTORS"], 5, *env.observation_space().shape))
         initial_act_history = jnp.zeros((model_config["NUM_ACTORS"], 5), dtype=jnp.int32)
         initial_last_partner_action = jnp.zeros((model_config["NUM_ACTORS"],), dtype=jnp.int32)
+        initial_last_action = jnp.zeros((model_config["NUM_ACTORS"],), dtype=jnp.int32)
+
+        # [E3T] Initial Ego Indices (Random init)
+        initial_ego_idxs = jax.random.randint(_rng, (model_config["NUM_ENVS"],), 0, env.num_agents)
 
         runner_state = (
             train_state,
@@ -1236,6 +1259,8 @@ def make_train(
             initial_obs_history,
             initial_act_history,
             initial_last_partner_action,
+            initial_last_action,
+            initial_ego_idxs,
             _rng,
         )
         num_update_steps = model_config["NUM_UPDATES"]

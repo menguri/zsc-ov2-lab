@@ -10,8 +10,8 @@ set -euo pipefail
 # ==============================================================================
 
 : "${CUDA_VISIBLE_DEVICES:=0}"                 # GPU 할당 (콤마 구분: 예 0,1)
-: "${WANDB_PROJECT:=jax-aht}"                  # W&B 프로젝트명
-: "${WANDB_ENTITY:=tatalintelli-university-of-seoul}"
+: "${WANDB_PROJECT:=zsc-experiment}"                  # W&B 프로젝트명
+: "${WANDB_ENTITY:=m-personal-experiment}"
 : "${NUM_SEEDS:=10}"                           # 실험 시드 수
 : "${NUM_ITERATIONS:=1}"
 
@@ -326,7 +326,16 @@ cd ~/mingukang/ex-overcookedv2
 # 1) uv env 활성화
 source overcooked_v2/bin/activate
 
-# 2) 파이썬 진단 (가상환경 활성화 후)
+# 2) WandB 로그인
+if [[ -f "experiments/wandb_info/wandb_api_key" ]]; then
+  export WANDB_API_KEY=$(cat experiments/wandb_info/wandb_api_key)
+  echo "[INFO] WandB API key loaded from wandb_info/wandb_api_key"
+  wandb login "$WANDB_API_KEY"
+else
+  echo "[WARN] WandB API key file not found at experiments/wandb_info/wandb_api_key"
+fi
+
+# 3) 파이썬 진단 (가상환경 활성화 후)
 env -u LD_LIBRARY_PATH -u XLA_FLAGS python - <<'PY' 2>&1 | filter_ptx
 import os
 import jax

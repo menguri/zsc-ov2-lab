@@ -105,13 +105,11 @@ class PPOPolicy(AbstractPolicy):
 
             # predict_partner 호출 (Batch, k, ...) -> (Batch, ActionDim)
             # method='predict_partner'를 사용하여 ActorCriticRNN 내부의 predict_partner 메서드 호출
-            # Pass z_state and anchor for STL
             pred = self.network.apply(
                 params, 
                 obs_hist_in, 
                 act_hist_in, 
                 z_state=z_state,
-                anchor=is_anchor,
                 method='predict_partner'
             )
             

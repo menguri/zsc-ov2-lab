@@ -15,8 +15,7 @@ fi
 echo "Starting visualization factory by environment..."
 
 # ./run_visualize.sh --gpu 7 --dir runs/20251209-000000_coord_ring --all --num_seeds 5
-./run_visualize.sh --gpu 7 --dir runs/20251209-100533_9muxsfpp_forced_coord_stl --all --num_seeds 10 --no_viz
-./run_visualize.sh --gpu 7 --dir runs/20251209-133945_wrtxyhl0_counter_circuit_stl --all --num_seeds 10 --no_viz
+./run_visualize.sh --gpu 0 --dir runs/20260128-015425_9usv82dt_counter_circuit_fcp --cross --num_seeds 5
 
 echo ""
 echo "All visualizations completed!"

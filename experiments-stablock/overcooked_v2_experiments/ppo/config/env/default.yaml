@@ -1,0 +1,28 @@
+"ENV_NAME": "overcooked_v2"
+"ENV_KWARGS": 
+  # "layout": "cramped_room"
+  # "layout": "asymm_advantages"
+  # "layout": "coord_ring"
+  # "layout": "forced_coord"
+  # "layout": "counter_circuit"
+  # "layout": "cramped_room_v2"
+  # "layout" : "asymm_advantages_recipes_right"
+  # "layout": "two_rooms"
+  # "layout": "fun_coordination"
+  # "layout": "more_fun_coordination"
+  # "layout": "fun_symmetries"
+  # "layout": "fun_symmetries1"
+  # "layout": "grounded_coord_simple"
+  # "layout": "grounded_coord_ring"
+  # "layout": "test_time_simple"
+  # "layout": "test_time_wide"
+  # "layout": "demo_cook_simple"
+  # "layout": "demo_cook_wide"
+  # "agent_view_size": 2
+  # "random_reset": True
+  # "negative_rewards": True
+  # "random_agent_positions": True
+  # "observation_type": "embedded"
+  # "sample_recipe_on_delivery": True
+  # "indicate_successful_delivery": True
+  # "op_ingredient_permutations": [0,1]

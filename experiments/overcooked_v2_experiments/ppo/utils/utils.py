@@ -28,6 +28,8 @@ def _infer_run_suffix(config) -> str:
         # STL (Anchor) 활성화 시 suffix에 stl 추가
         if config.get("model", {}).get("anchor", False):
             suffix = f"stl"
+    if config.get("ALG_NAME") == "E3D":
+        suffix = f"e3d"
 
     return suffix
 

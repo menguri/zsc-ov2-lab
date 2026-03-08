@@ -22,8 +22,8 @@ SEEDS=10
 get_fcp_path() {
     local env=$1
     case $env in
-        "cramped_room")
-            echo "fcp_populations/cramped_room_sp"
+        "counter_circuit")
+            echo "fcp_populations/counter_circuit_sp"
             ;;
         "grounded_coord_ring")
             echo "fcp_populations/grounded_coord_ring_sp"
@@ -92,10 +92,10 @@ run_fcp() {
 # ==============================================================================
 
 # # 1. Grounded Coord Simple
-# run_fcp "0,1,2,3,4" "grounded_coord_simple" ""
+run_fcp "0,4,5,6,7" "grounded_coord_simple" ""
 
 # 2. Grounded Coord Ring
-run_fcp "0,1,2,3,4" "grounded_coord_ring" ""
+# run_fcp "0,1,2,3,4" "grounded_coord_ring" ""
 
 # # 3. Demo Cook Simple
 # run_fcp "0,1,2,3,4" "demo_cook_simple" ""
@@ -110,7 +110,7 @@ run_fcp "0,1,2,3,4" "grounded_coord_ring" ""
 # run_fcp "0,1,2,3,4" "test_time_wide" ""
 
 # 7. Cramped Room (Original) - No FCP path
-run_fcp "0,1,2,3,4" "cramped_room" ""
+# run_fcp "0,1,2,3,4" "cramped_room" ""
 
 # # 8. Asymmetric Advantages (Original) - No FCP path
 # run_fcp "0,1,2,3,4" "asymm_advantages" ""
@@ -122,4 +122,4 @@ run_fcp "0,1,2,3,4" "cramped_room" ""
 # run_fcp "0,1,2,3,4" "forced_coord" ""
 
 # # 11. Counter Circuit (Original) - No FCP path
-# run_fcp "0,1,2,3,4" "counter_circuit" ""
+run_fcp "0,4,5,6,7" "counter_circuit" ""

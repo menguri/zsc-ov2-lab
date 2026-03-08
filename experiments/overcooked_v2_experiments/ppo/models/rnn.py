@@ -8,7 +8,7 @@ import distrax
 from flax.linen.initializers import constant, orthogonal
 from .abstract import ActorCriticBase
 from .common import CNN, MLP
-from .e3t import PartnerPredictionModule, ScannedSTLPartnerPredictor
+from .e3t import PartnerPredictionModule, ScannedPartnerPredictor
 
 
 class ScannedRNN(nn.Module):
@@ -92,18 +92,12 @@ class ActorCriticRNN(ActorCriticBase):
                 act_history_seq = act_history
             
             # STL Prediction
-            anchor_val = self.config.get("anchor", False)
-            # obs_history_seq.shape[1] is Batch
-            B = obs_history_seq.shape[1]
-            # anchor_seq: (1, Batch)
-            # Time 차원(1)에 맞춰 확장
-            T_scan = obs_history_seq.shape[0]
-            anchor_seq = jnp.full((T_scan, B), anchor_val, dtype=bool)
+            # STL Removed
+            predictor_in = (obs_history_seq, act_history_seq)
             
-            stl_in = (obs_history_seq, act_history_seq, anchor_seq)
             # Use name="shared_predictor" to share parameters with predict_partner
             # Run the predictor to ensure params are initialized or to get prediction
-            new_z_state, generated_prediction = ScannedSTLPartnerPredictor(action_dim=self.action_dim, name="shared_predictor")(z_state, stl_in)
+            new_z_state, generated_prediction = ScannedPartnerPredictor(action_dim=self.action_dim, name="shared_predictor")(z_state, predictor_in)
             
             # Remove Time dimension: (1, Batch, Dim) -> (Batch, Dim)
             # Scan 결과는 항상 Time 차원을 포함하므로, 단일 스텝인 경우 제거
@@ -168,14 +162,13 @@ class ActorCriticRNN(ActorCriticBase):
         return (rnn_state, z_state), pi, jnp.squeeze(critic, axis=-1)
 
     @nn.compact
-    def predict_partner(self, obs_history, act_history, z_state=None, anchor=False):
+    def predict_partner(self, obs_history, act_history, z_state=None):
         """
-        E3T / STL Partner Prediction
+        E3T Partner Prediction
         Args:
             obs_history: (Batch, 5, H, W, C)
             act_history: (Batch, 5)
-            z_state: (Batch, ActionDim) - Optional, for STL
-            anchor: bool - Optional, for STL
+            z_state: (Batch, ActionDim) - Optional
         Returns:
             partner_prediction: (Batch, ActionDim)
         """
@@ -187,13 +180,12 @@ class ActorCriticRNN(ActorCriticBase):
         # Add Time dimension for Scanned module: (1, Batch, ...)
         obs_history_seq = obs_history[jnp.newaxis, ...]
         act_history_seq = act_history[jnp.newaxis, ...]
-        anchor_seq = jnp.full((1, batch_size), anchor, dtype=bool)
         
-        stl_in = (obs_history_seq, act_history_seq, anchor_seq)
+        predictor_in = (obs_history_seq, act_history_seq)
         
         # Use name="shared_predictor" to share parameters with __call__
         # We ignore the new z_state here as this method is for prediction output only
-        _, partner_prediction_seq = ScannedSTLPartnerPredictor(action_dim=self.action_dim, name="shared_predictor")(z_state, stl_in)
+        _, partner_prediction_seq = ScannedPartnerPredictor(action_dim=self.action_dim, name="shared_predictor")(z_state, predictor_in)
         
         # Remove Time dimension: (1, Batch, Dim) -> (Batch, Dim)
         result = partner_prediction_seq[0]
@@ -203,14 +195,13 @@ class ActorCriticRNN(ActorCriticBase):
         return result
 
     @nn.compact
-    def predict_partner_trajectory(self, obs_history, act_history, z_init=None, anchor=False):
+    def predict_partner_trajectory(self, obs_history, act_history, z_init=None):
         """
-        E3T / STL Partner Prediction for Trajectory (Scan)
+        E3T Partner Prediction for Trajectory (Scan)
         Args:
             obs_history: (T, Batch, Context, H, W, C)
             act_history: (T, Batch, Context)
             z_init: (Batch, ActionDim) - Optional
-            anchor: bool
         Returns:
             partner_prediction: (T, Batch, ActionDim)
         """
@@ -222,10 +213,9 @@ class ActorCriticRNN(ActorCriticBase):
         if z_init is None:
             z_init = jnp.zeros((B, self.action_dim))
             
-        anchor_seq = jnp.full((T, B), anchor, dtype=bool)
-        stl_in = (obs_history, act_history, anchor_seq)
+        predictor_in = (obs_history, act_history)
         
         # Use name="shared_predictor" to share parameters
-        _, partner_prediction = ScannedSTLPartnerPredictor(action_dim=self.action_dim, name="shared_predictor")(z_init, stl_in)
+        _, partner_prediction = ScannedPartnerPredictor(action_dim=self.action_dim, name="shared_predictor")(z_init, predictor_in)
         
         return partner_prediction

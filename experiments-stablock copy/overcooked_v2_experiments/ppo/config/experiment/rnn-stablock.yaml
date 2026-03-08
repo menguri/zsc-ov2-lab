@@ -1,0 +1,14 @@
+# @package _global_
+defaults:
+  - override /model: rnn
+
+# E3T + Stablock 실험 프리셋
+ALG_NAME: "E3T"
+USE_PARTNER_MODELING: True
+E3T_EPSILON: 0.0
+PRED_LOSS_COEF: 1.0
+
+# [Stablock] 비대칭 상태 차단 활성화
+STABLOCK_ENABLED: True
+# [Stablock] 파트너가 금지된 좌표에 도달하면 부여되는 큰 음의 보상
+STABLOCK_HEAVY_PENALTY: 10.0

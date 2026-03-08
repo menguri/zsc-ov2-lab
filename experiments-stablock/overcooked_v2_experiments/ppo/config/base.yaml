@@ -1,0 +1,12 @@
+defaults:
+  # - env: default
+  - wandb: default
+  - model: cnn
+
+SEED: 42
+NUM_SEEDS: 10
+TUNE: False
+NUM_CHECKPOINTS: 3
+VISUALIZE: False
+
+# NUM_ITERATIONS: 10
