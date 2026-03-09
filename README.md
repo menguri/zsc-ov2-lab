@@ -42,10 +42,21 @@ pip install -e experiments
 | **SA** (State-Augmentation) | 다른 에이전트의 잠재적 행동을 상태에 추가하여 학습합니다. | `python overcooked_v2_experiments/ppo/main.py +experiment=rnn-sa +env=grounded_coord_simple NUM_SEEDS=10 NUM_ITERATIONS=10` |
 | **OP** (Other-Play) | 미리 훈련된 다양한 에이전트(population)와 무작위로 매칭되어 학습합니다. | `python overcooked_v2_experiments/ppo/main.py +experiment=rnn-op +env=grounded_coord_simple NUM_SEEDS=10` |
 | **FCP** (Fictitious Co-Play) | SP로 학습된 에이전트 집단(population) 내에서 파트너를 선택하여 학습합니다. | `python overcooked_v2_experiments/ppo/main.py +experiment=rnn-fcp +env=grounded_coord_simple NUM_SEEDS=1 +FCP=<population_path>` |
+| **E3T** (Environment-Ego-Teammate) | 파트너의 행동을 예측하는 모듈을 추가하여, 예측된 정보를 정책 입력으로 활용합니다. | `python overcooked_v2_experiments/ppo/main.py +experiment=rnn-e3t +env=grounded_coord_simple NUM_SEEDS=10` |
 
-- `+experiment`: `rnn-sp`, `rnn-sa`, `rnn-op`, `rnn-fcp` 등 실험 유형을 지정합니다.
+- `+experiment`: `rnn-sp`, `rnn-sa`, `rnn-op`, `rnn-fcp`, `rnn-e3t` 등 실험 유형을 지정합니다.
 - `+env`: `grounded_coord_simple` 등 환경 레이아웃을 지정합니다.
 - `NUM_SEEDS`: 동시에 실행할 시드 수를 설정합니다.
+
+### E3T & STL 실험 (Partner Modeling)
+
+이 저장소는 파트너 모델링을 위한 최신 알고리즘인 E3T와 STL을 지원합니다.
+
+#### 1. E3T (Environment-Ego-Teammate)
+E3T는 **Stateless Prediction** 방식을 사용하여 파트너를 모델링합니다.
+- **작동 원리**: 매 스텝 최근 5개의 관측(`obs_history`)과 파트너 행동(`act_history`)을 입력받아 파트너의 다음 행동을 예측합니다.
+- **특징**: 과거의 잠재 상태(Latent State)를 유지하지 않고 현재의 기록(History)에만 의존하므로, 파트너의 행동이 급변할 경우 예측이 불안정해질 수 있습니다.
+
 
 ### FCP 실험 워크플로우
 
@@ -96,6 +107,20 @@ FCP는 2단계로 진행됩니다.
     # 모든 체크포인트에 대해 지표만 계산 (시각화 X)
     sh sh_scripts/run_visualize.sh --gpu 0 --dir runs/20251121-040922_ii3s89wl_demo_cook_wide_avs-2-256-sp --all --no_viz
     ```
+
+## AI-AI Coordination (다른 알고리즘 간 협력)
+
+다른 알고리즘으로 학습된 에이전트들 간의 협력을 평가하기 위해, `runs/` 폴더에 원하는 레이아웃에 대한 각 알고리즘의 run 파일을 `run_0`부터 `run_n` (n+1개 알고리즘을 비교하기 위해)으로 옮겨놓고, 시각화 cross 모드를 사용하여 비교할 수 있습니다.
+
+예를 들어, `grounded_coord_simple` 레이아웃에서 SP, SA, E3T 알고리즘을 비교하려면:
+
+1. 각 알고리즘의 학습 결과를 `runs/`에서 찾아 `run_0`, `run_1`, `run_2` 등으로 이름을 변경하여 같은 디렉토리에 배치합니다.
+2. 시각화 스크립트를 cross 모드로 실행합니다:
+   ```bash
+   sh sh_scripts/run_visualize.sh --gpu <gpu_id> --dir <run_directory> --cross
+   ```
+
+이렇게 하면 서로 다른 알고리즘의 에이전트들이 협력하는 시나리오를 시각화하고 평가할 수 있습니다.
 
 
 

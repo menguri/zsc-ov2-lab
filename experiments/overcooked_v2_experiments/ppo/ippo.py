@@ -40,6 +40,12 @@ class Transition(NamedTuple):
     obs: jnp.ndarray
     info: jnp.ndarray
     train_mask: jnp.ndarray
+    obs_history: jnp.ndarray
+    act_history: jnp.ndarray
+    partner_action: jnp.ndarray
+    is_ego: jnp.ndarray
+    z_state: jnp.ndarray
+    prev_action: jnp.ndarray
 
 
 def batchify(x: dict, agent_list, num_actors):
@@ -61,6 +67,11 @@ def make_train(
     env_config = config["env"]
     model_config = config["model"]
 
+    # E3T 설정 로드
+    alg_name = config.get("ALG_NAME", "SP")
+    e3t_epsilon = config.get("E3T_EPSILON", 0.05)
+    use_partner_modeling = config.get("USE_PARTNER_MODELING", True)
+
     # Optional device selection for environment to mitigate GPU OOM.
     # Usage via Hydra override: +ENV_DEVICE=cpu  (default: gpu / auto)
     env_device = config.get("ENV_DEVICE", None)  # None -> default placement
@@ -73,6 +84,8 @@ def make_train(
             env = jaxmarl.make(env_config["ENV_NAME"], **env_config["ENV_KWARGS"])
     else:
         env = jaxmarl.make(env_config["ENV_NAME"], **env_config["ENV_KWARGS"])
+
+    ACTION_DIM = env.action_space(env.agents[0]).n
 
     model_config["NUM_ACTORS"] = env.num_agents * model_config["NUM_ENVS"]
     model_config["NUM_UPDATES"] = (
@@ -175,6 +188,16 @@ def make_train(
     print("train_mask_flat", train_mask_flat.shape)
     print("train_mask_flat sum", train_mask_flat.sum())
 
+    # NUM_ACTORS = (env.num_agents * NUM_ENVS)이므로, 각 슬롯이 어떤 에이전트인지 구분하기 위해
+    # 반복되는 인덱스 벡터를 만들어 ego/partner 마스크를 구성한다.
+    # batchify 결과는 Agent Major 순서 ([Ag0_Env0, ..., Ag0_EnvN, Ag1_Env0, ...])이므로
+    # repeat를 사용하여 [0, 0, ..., 1, 1, ...] 형태로 만들어야 한다.
+    actor_indices = jnp.repeat(
+        jnp.arange(env.num_agents, dtype=jnp.int32), model_config["NUM_ENVS"]
+    )
+    ego_actor_mask = actor_indices == 0
+    partner_actor_mask = actor_indices == (env.num_agents - 1)
+
     use_population_annealing = False
     if "POPULATION_ANNEAL_HORIZON" in config:
         print("Using population annealing")
@@ -217,12 +240,37 @@ def make_train(
         init_hstate = initialize_carry(config, model_config["NUM_ENVS"])
 
         if init_hstate is not None:
-            print("init_hstate", init_hstate.shape)
+            if isinstance(init_hstate, tuple):
+                print("init_hstate (tuple)", [x.shape for x in init_hstate])
+            else:
+                print("init_hstate", init_hstate.shape)
         # jax.debug.print("check1 {x}", x=init_hstate.flatten()[0])
 
         print("init_x", init_x[0].shape, init_x[1].shape)
 
-        network_params = network.init(_rng, init_hstate, init_x)
+        # E3T: Prepare dummy inputs for Single Initialization
+        dummy_partner_prediction = None
+        dummy_obs_hist = None
+        dummy_act_hist = None
+        
+        if alg_name == "E3T" and use_partner_modeling:
+             # Shape: (Time=1, Batch=NUM_ENVS, ActionDim=6)
+             dummy_partner_prediction = jnp.zeros((1, model_config["NUM_ENVS"], ACTION_DIM))
+             # Shape: (1, Batch, Context=5, H, W, C)
+             dummy_obs_hist = jnp.zeros((1, model_config["NUM_ENVS"], 5, *env.observation_space().shape))
+             dummy_act_hist = jnp.zeros((1, model_config["NUM_ENVS"], 5), dtype=jnp.int32)
+
+        # Single Init: Initialize all parameters at once to avoid collision
+        # 단일 초기화: 파라미터 충돌 방지를 위해 모든 모듈을 한 번에 초기화
+        network_params = network.init(
+            _rng, 
+            init_hstate, 
+            init_x, 
+            partner_prediction=dummy_partner_prediction,
+            obs_history=dummy_obs_hist,
+            act_history=dummy_act_hist
+        )
+
         if model_config["ANNEAL_LR"]:
             tx = optax.chain(
                 optax.clip_by_global_norm(model_config["MAX_GRAD_NORM"]),
@@ -269,9 +317,7 @@ def make_train(
                     population_config, model_config["NUM_ACTORS"]
                 )
 
-                fcp_population_size = jax.tree_util.tree_flatten(population)[0][
-                    0
-                ].shape[0]
+                fcp_population_size = jax.tree_util.tree_flatten(population)[0][0].shape[0]
                 print("FCP population size", fcp_population_size)
 
                 # print(f"normal hstate {init_hstate.shape}")
@@ -306,6 +352,11 @@ def make_train(
                 initial_population_hstate,
                 last_population_annealing_mask,
                 initial_fcp_pop_agent_idxs,
+                obs_history,
+                act_history,
+                last_partner_action,
+                last_action,
+                ego_idxs,
                 rng,
             ) = runner_state
 
@@ -323,8 +374,44 @@ def make_train(
                     population_hstate,
                     population_annealing_mask,
                     fcp_pop_agent_idxs,
+                    obs_history,
+                    act_history,
+                    last_partner_action,
+                    last_action,
+                    ego_idxs,
                     rng,
                 ) = env_step_state
+
+                # [E3T] Dynamic Ego Assignment Logic
+                # Check episode completion using last_done
+                # last_done is (NUM_ACTORS,), reshaped to check env-wise done
+                # OvercookedV2 agents terminate simultaneously
+                last_done_reshaped = last_done.reshape(env.num_agents, model_config["NUM_ENVS"])
+                episode_done = last_done_reshaped[0] # (NUM_ENVS,)
+
+                rng, _rng = jax.random.split(rng)
+                new_random_idxs = jax.random.randint(_rng, (model_config["NUM_ENVS"],), 0, env.num_agents)
+
+                # Update ego_idxs only for environments that just finished
+                ego_idxs = jnp.where(episode_done, new_random_idxs, ego_idxs)
+
+                # Calculate actor indices and is_ego
+                actor_indices = jnp.repeat(
+                    jnp.arange(env.num_agents, dtype=jnp.int32), model_config["NUM_ENVS"]
+                )
+                
+                # Expand ego_idxs (NUM_ENVS,) to match actor_indices (NUM_ACTORS,)
+                # actor_indices is [0...0, 1...1] (Agent-Major)
+                # target_ego_idxs should be [e0...en, e0...en]
+                target_ego_idxs = jnp.tile(ego_idxs, env.num_agents)
+                
+                is_ego = (actor_indices == target_ego_idxs)
+                partner_actor_mask = ~is_ego
+
+                # Capture z_state from input hstate (before update) for storage
+                z_state_in = jnp.zeros((model_config["NUM_ACTORS"], ACTION_DIM))
+                if isinstance(hstate, tuple):
+                    _, z_state_in = hstate
 
                 # jax.debug.print("check4 {x}", x=hstate.flatten()[0])
 
@@ -337,17 +424,90 @@ def make_train(
                 if cast_obs_bf16:
                     obs_batch = obs_batch.astype(jnp.bfloat16)
 
+                # --------------------------------------------------------------
+                # E3T History Update & Partner Prediction
+                # --------------------------------------------------------------
+                # 1. History Update
+                if alg_name == "E3T":
+                    # last_done이 True이면 히스토리 초기화 (Masking)
+                    reset_mask = (1 - last_done.astype(jnp.int32))[:, None]
+                    obs_history = obs_history * reset_mask[..., None, None, None].astype(jnp.float32)
+                    act_history = act_history * reset_mask
+                    
+                    # Shift (Left)
+                    obs_history = jnp.roll(obs_history, shift=-1, axis=1)
+                    act_history = jnp.roll(act_history, shift=-1, axis=1)
+                    
+                    # Update last element
+                    # obs_history[-1] <- current obs (obs_batch)
+                    obs_history = obs_history.at[:, -1].set(obs_batch)
+                    
+                    # act_history[-1] <- last partner action
+                    # 에피소드 시작 시점(last_done=True)이면 0으로 처리
+                    # last_partner_action은 이전 스텝의 '내' 행동이므로, 파트너의 행동을 얻기 위해 swap해야 함
+                    # (NUM_ACTORS = 2 * NUM_ENVS 가정)
+                    prev_partner_action = jnp.roll(last_partner_action, shift=model_config["NUM_ENVS"], axis=0)
+                    last_partner_action_masked = jnp.where(last_done, 0, prev_partner_action)
+                    act_history = act_history.at[:, -1].set(last_partner_action_masked)
+                
+                # 2. Partner Prediction
+                partner_prediction = None
+                if alg_name == "E3T" and use_partner_modeling:
+                    # Extract z_state if available
+                    z_in = None
+                    if isinstance(hstate, tuple):
+                        _, z_in = hstate
+                        # z_in is (Batch, Dim)
+                    
+                    # anchor removed
+
+                    # (1) 실제 파트너 예측 (Ego용)
+                    real_prediction = network.apply(train_state.params, obs_history, act_history, z_state=z_in, method='predict_partner')
+                    
+                    # (2) 무작위 행동 임베딩 (Partner용)
+                    # 파트너는 Ego를 예측하지 않고, 무작위 행동(또는 노이즈)을 조건으로 받아 자신의 정책을 수행한다고 가정
+                    rng, rng_rand_input = jax.random.split(rng)
+                    rand_act_input = jax.random.randint(rng_rand_input, (model_config["NUM_ACTORS"],), 0, ACTION_DIM)
+                    rand_pred_input = jax.nn.one_hot(rand_act_input, num_classes=ACTION_DIM)
+                    
+                    # L2 Normalize (PartnerPredictionModule 출력 스케일과 맞춤)
+                    norm = jnp.linalg.norm(rand_pred_input, axis=-1, keepdims=True)
+                    rand_pred_input = rand_pred_input / (norm + 1e-6)
+                    
+                    # (3) Ego vs Partner 구분하여 입력 선택
+                    # Ego(Agent 0)는 예측값 사용, Partner(Agent 1)는 무작위 입력 사용
+                    # is_ego = (actor_indices == 0) # Removed: using dynamic is_ego calculated above
+                    
+                    # real_prediction: (Batch, 6)
+                    # rand_pred_input: (Batch, 6)
+                    combined_prediction = jnp.where(is_ego[:, None], real_prediction, rand_pred_input)
+                    
+                    # (Batch, ActionDim) -> (1, Batch, ActionDim) for Actor input
+                    partner_prediction = combined_prediction[jnp.newaxis, ...]
+
                 ac_in = (
                     obs_batch[np.newaxis, :],
                     last_done[np.newaxis, :],
                 )
 
-                hstate, pi, value = network.apply(train_state.params, hstate, ac_in)
+                hstate, pi, value = network.apply(train_state.params, hstate, ac_in, partner_prediction=partner_prediction)
 
                 # jax.debug.print("check5 {x}", x=hstate.flatten()[0])
 
+                num_action_choices = pi.logits.shape[-1]
+                # policy 정규화 진행해야 하나? => 이미 함수 안에서 되어 있음.
                 action = pi.sample(seed=_rng)
                 log_prob = pi.log_prob(action)
+                # policy_action(action)과 환경에 전달할 action을 분리해서 관리한다.
+                #  - trajectory/log_prob 계산에는 action(정책 샘플) 그대로 사용
+                #  - 환경 실행 시에는 이후 mask 로직을 거친 action_for_env를 사용한다.
+                action_for_env = action
+                raw_policy_entropy = pi.entropy().reshape(
+                    (model_config["NUM_ACTORS"],)
+                )
+                log_action_dim = jnp.log(jnp.array(num_action_choices, dtype=jnp.float32))
+                safe_log_action_dim = jnp.maximum(log_action_dim, 1e-6)
+                policy_entropy = raw_policy_entropy / safe_log_action_dim
 
                 action_pick_mask = jnp.ones(
                     (model_config["NUM_ACTORS"],), dtype=jnp.bool_
@@ -401,15 +561,62 @@ def make_train(
                             population_hstate,
                         )
 
-                    action_pick_mask = train_mask_flat
+                    # action_pick_mask = train_mask_flat
+                    # [Fix] FCP에서도 매 에피소드 랜덤하게 Ego/Partner 역할을 바꾸기 위해 is_ego를 사용
+                    action_pick_mask = is_ego
                     if use_population_annealing:
                         action_pick_mask = _make_train_mask(population_annealing_mask)
 
                     # use action_pick_mask to select the action from the population or the network
-                    action = jnp.where(action_pick_mask, action, pop_actions)
+                    action_for_env = jnp.where(action_pick_mask, action_for_env, pop_actions)
+
+                # E3T 알고리즘: 파트너 정책 혼합 (Mixture Partner Policy)
+                # [E3T] 파트너 행동 변경 로직 (Mixture Policy)
+                # 파트너는 (1-epsilon) 확률로 자신의 정책을 따르고, epsilon 확률로 무작위 행동을 수행함
+                if alg_name == "E3T":
+                    # 1. rng 분리 (혼합 정책용)
+                    rng, rng_mix = jax.random.split(rng)
+                    
+                    # 2. 베르누이 마스크 생성 (p=E3T_EPSILON)
+                    # True일 경우 무작위 행동을 선택
+                    mix_mask = jax.random.bernoulli(rng_mix, p=e3t_epsilon, shape=(model_config["NUM_ACTORS"],))
+                    
+                    # [중요] 파트너 에이전트(partner_actor_mask)인 경우에만 무작위 행동 혼합을 적용
+                    # Ego 에이전트는 자신의 정책을 그대로 따름
+                    mix_mask = mix_mask & partner_actor_mask
+                    
+                    # 3. 완전 무작위 행동 샘플링
+                    rng, rng_rand = jax.random.split(rng)
+                    # Fix: Ensure shape is (NUM_ACTORS,) not (1, NUM_ACTORS)
+                    rand_action = jax.random.randint(
+                        rng_rand,
+                        (model_config["NUM_ACTORS"],),
+                        0,
+                        num_action_choices,
+                        dtype=action_for_env.dtype,
+                    )
+                    
+                    # 4. 실제 파트너 행동 결정
+                    # 마스크가 True이면 무작위 행동, False이면 기존 정책 행동(ego_policy_action) 사용
+                    actual_partner_action = jax.lax.select(mix_mask, rand_action, action_for_env.squeeze())
+                    
+                    # 5. 환경에 전달할 행동 업데이트
+                    # Fix: Force int32 type
+                    action_for_env = actual_partner_action.astype(jnp.int32)
+
+                # Ensure action_for_env is squeezed (NUM_ACTORS,) to match carry shape
+                # This fixes the scan carry shape mismatch error (int32[512] vs int32[1,512])
+                if len(action_for_env.shape) > 1:
+                    action_for_env = action_for_env.squeeze()
+
+                # Update last_partner_action for next step history
+                last_partner_action = action_for_env
 
                 env_act = unbatchify(
-                    action, env.agents, model_config["NUM_ENVS"], env.num_agents
+                    action_for_env,
+                    env.agents,
+                    model_config["NUM_ENVS"],
+                    env.num_agents,
                 )
                 env_act = {k: v.flatten() for k, v in env_act.items()}
 
@@ -449,6 +656,12 @@ def make_train(
                 info["anneal_factor"] = jnp.full_like(shaped_reward, anneal_factor)  # 현재 감쇠 계수
                 info["combined_reward"] = combined_reward  # PPO 학습에 실제 사용되는 최종 보상
 
+                # --------------------------------------------------------------
+                # entropy 디버깅 정보를 info에 추가
+                #   - policy_entropy: 각 슬롯별 정책 엔트로피 (항상 기록)
+                # --------------------------------------------------------------
+                info["policy_entropy"] = policy_entropy
+
                 info = jax.tree_util.tree_map(
                     lambda x: x.reshape((model_config["NUM_ACTORS"])), info
                 )
@@ -483,6 +696,10 @@ def make_train(
                 else:
                     new_fcp_pop_agent_idxs = fcp_pop_agent_idxs
 
+                # E3T: 현재 스텝의 파트너 행동 (Target Label)
+                # action_for_env는 현재 스텝의 '내' 행동이므로, 파트너의 행동을 얻기 위해 swap
+                current_partner_action = jnp.roll(action_for_env, shift=model_config["NUM_ENVS"], axis=0)
+
                 transition = Transition(
                     jnp.tile(done["__all__"], env.num_agents),
                     action.squeeze(),
@@ -492,6 +709,12 @@ def make_train(
                     obs_batch,
                     info,
                     action_pick_mask,
+                    obs_history,
+                    act_history,
+                    current_partner_action,
+                    is_ego,
+                    z_state_in,
+                    last_action,
                 )
 
                 # jax.debug.print("check6 {x}", x=hstate.flatten()[0])
@@ -506,6 +729,11 @@ def make_train(
                     population_hstate,
                     new_population_annealing_mask,
                     new_fcp_pop_agent_idxs,
+                    obs_history,
+                    act_history,
+                    last_partner_action,
+                    last_partner_action,
+                    ego_idxs,
                     rng,
                 )
                 return env_step_state, transition
@@ -520,6 +748,11 @@ def make_train(
                 initial_population_hstate,
                 last_population_annealing_mask,
                 initial_fcp_pop_agent_idxs,
+                obs_history,
+                act_history,
+                last_partner_action,
+                last_action,
+                ego_idxs,
                 rng,
             )
             env_step_state, traj_batch = jax.lax.scan(
@@ -535,6 +768,11 @@ def make_train(
                 next_population_hstate,
                 last_population_annealing_mask,
                 next_fcp_pop_agent_idxs,
+                obs_history,
+                act_history,
+                last_partner_action,
+                next_last_action,
+                next_ego_idxs,
                 rng,
             ) = env_step_state
 
@@ -552,8 +790,32 @@ def make_train(
                 last_obs_batch[np.newaxis, :],
                 last_done[np.newaxis, :],
             )
+
+            # [E3T] Calculate partner_prediction for last_val (Value Function)
+            partner_prediction = None
+            if alg_name == "E3T" and use_partner_modeling:
+                # 1. Predict
+                pred_logits = network.apply(train_state.params, obs_history, act_history, method='predict_partner')
+                
+                # 2. Random Input for Partner
+                rng, rng_rand_input = jax.random.split(rng)
+                rand_act_input = jax.random.randint(rng_rand_input, (model_config["NUM_ACTORS"],), 0, ACTION_DIM)
+                rand_pred_input = jax.nn.one_hot(rand_act_input, num_classes=ACTION_DIM)
+                norm = jnp.linalg.norm(rand_pred_input, axis=-1, keepdims=True)
+                rand_pred_input = rand_pred_input / (norm + 1e-6)
+                
+                # 3. Combine
+                target_ego_idxs = jnp.tile(next_ego_idxs, env.num_agents)
+                is_ego = (actor_indices == target_ego_idxs)
+                combined_prediction = jnp.where(
+                    is_ego[:, None], pred_logits, rand_pred_input
+                )
+                
+                # 4. Add Time Dimension (1, Batch, ActionDim)
+                partner_prediction = combined_prediction[jnp.newaxis, ...]
+
             _, _, last_val = network.apply(
-                train_state.params, next_initial_hstate, ac_in
+                train_state.params, next_initial_hstate, ac_in, partner_prediction=partner_prediction
             )
 
             last_val = last_val.squeeze()
@@ -593,22 +855,93 @@ def make_train(
             def _update_epoch(update_state, unused):
                 def _update_minbatch(train_state, batch_info):
                     init_hstate, traj_batch, advantages, targets = batch_info
+                    effective_train_mask = jnp.ones_like(
+                        traj_batch.done, dtype=jnp.bool_
+                    )
+                    if population is not None:
+                        effective_train_mask = effective_train_mask & jax.lax.stop_gradient(
+                            traj_batch.train_mask.astype(jnp.bool_)
+                        )
+                    if alg_name == "E3T":
+                        effective_train_mask = effective_train_mask & jax.lax.stop_gradient(
+                            traj_batch.is_ego.astype(jnp.bool_)
+                        )
 
-                    def _loss_fn(params, init_hstate, traj_batch, gae, targets):
+                    def _loss_fn(params, init_hstate, traj_batch, gae, targets, effective_train_mask):
                         hstate = init_hstate
                         if hstate is not None:
-                            hstate = hstate.squeeze(axis=0)
+                            if isinstance(hstate, tuple):
+                                hstate = tuple(x.squeeze(axis=0) for x in hstate)
+                            else:
+                                hstate = hstate.squeeze(axis=0)
                             # hstate = jax.lax.stop_gradient(hstate)
 
-                        train_mask = True
-                        if population is not None:
-                            train_mask = jax.lax.stop_gradient(traj_batch.train_mask)
+                        train_mask = effective_train_mask
+
+                        # --------------------------------------------------------------
+                        # E3T Partner Prediction Loss & Gradient Blocking
+                        # --------------------------------------------------------------
+                        pred_loss = 0.0
+                        pred_accuracy = 0.0
+                        partner_prediction = None
+
+                        if alg_name == "E3T" and use_partner_modeling:
+                            # 1. Forward Pass for Prediction
+                            # PPO 미니배치는 셔플되어 시간 연속성이 없으므로 Scan을 사용할 수 없습니다.
+                            # 따라서 단일 스텝 예측(predict_partner)을 사용합니다.
+                            
+                            # traj_batch.obs_history: (Minibatch, 5, H, W, C)
+                            # traj_batch.act_history: (Minibatch, 5)
+                            obs_hist_flat = traj_batch.obs_history
+                            act_hist_flat = traj_batch.act_history
+                            
+                            # --------------------------------------------------------------
+                            # [E3T Implementation] Partner Prediction Loss
+                            # --------------------------------------------------------------
+                            # 인코더는 파트너의 다음 행동을 예측하도록 학습합니다.
+                            # z_state는 Rollout 시점의 값을 사용하여 일관성을 유지합니다 (Carry state matching).
+                            
+                            pred_logits = network.apply(params, obs_hist_flat, act_hist_flat, z_state=traj_batch.z_state, method='predict_partner')
+                            
+                            # Policy Input (Actor Training) uses the same prediction
+                            pred_logits_policy = pred_logits
+
+                            # 2. Label Matching & Loss Calculation
+                            # 예측값: (Minibatch, ActionDim)
+                            pred_logits_flat = pred_logits
+                            
+                            # 정답값: (Minibatch,)
+                            target_labels_flat = traj_batch.partner_action.astype(jnp.int32)
+                            
+                            # 3. Compute Cross-Entropy Loss (예측 손실 계산 - Raw 기준)
+                            pred_loss_vec = optax.softmax_cross_entropy_with_integer_labels(logits=pred_logits_flat, labels=target_labels_flat)
+                            
+                            # [E3T] Masking: Only Ego agents contribute to prediction loss
+                            is_ego_flat = traj_batch.is_ego
+                            pred_loss = (pred_loss_vec * is_ego_flat).sum() / (is_ego_flat.sum() + 1e-8)
+                            
+                            # Apply Coefficient
+                            pred_loss = pred_loss * config.get("PRED_LOSS_COEF", 1.0)
+                            
+                            # Calculate Accuracy
+                            pred_labels = jnp.argmax(pred_logits_flat, axis=-1)
+                            pred_accuracy = jnp.mean(pred_labels == target_labels_flat)
+                            
+                            # 4. Stop Gradient for Ego Policy (Actor 입력용)
+                            # Actor-Critic 네트워크에 입력으로 주기 위해 gradient를 차단합니다.
+                            partner_prediction_flat = jax.lax.stop_gradient(pred_logits_policy)
+                            # (Minibatch, ActionDim) -> (Minibatch, 1, ActionDim) for Actor Input (if needed)
+                            # 하지만 Actor는 (Batch, ...)를 기대하므로 (Minibatch, 1, ActionDim)으로 확장
+                            partner_prediction = partner_prediction_flat[:, jnp.newaxis, :]
 
                         # RERUN NETWORK
+                        # Actor-Critic 네트워크 재실행 (Value, Policy 계산)
+                        # partner_prediction을 함께 전달하여 shape mismatch (134 vs 128) 해결
                         _, pi, value = network.apply(
                             params,
                             hstate,
                             (traj_batch.obs, traj_batch.done),
+                            partner_prediction=partner_prediction
                         )
 
                         print("value shape", value.shape)
@@ -670,9 +1003,10 @@ def make_train(
                             loss_actor
                             + model_config["VF_COEF"] * value_loss
                             - model_config["ENT_COEF"] * entropy
+                            + pred_loss
                         )
 
-                        return total_loss, (value_loss, loss_actor, entropy, ratio)
+                        return total_loss, (value_loss, loss_actor, entropy, ratio, pred_loss, pred_accuracy)
 
                     def _perform_update():
                         grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
@@ -682,6 +1016,7 @@ def make_train(
                             traj_batch,
                             advantages,
                             targets,
+                            effective_train_mask,
                         )
 
                         # jax.debug.print(
@@ -696,7 +1031,7 @@ def make_train(
 
                     def _no_op():
                         # jax.debug.print("No update")
-                        return train_state, (0.0, (0.0, 0.0, 0.0, 0.0))
+                        return train_state, (0.0, (0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
 
                     # jax.debug.print(
                     #     "train_mask {x}, {y}",
@@ -705,7 +1040,7 @@ def make_train(
                     # )
 
                     train_state, total_loss = jax.lax.cond(
-                        traj_batch.train_mask.any(),
+                        effective_train_mask.any(),
                         _perform_update,
                         _no_op,
                     )
@@ -720,9 +1055,14 @@ def make_train(
 
                 hstate = init_hstate
                 if hstate is not None:
-                    print("hstate shape", hstate.shape)
-                    hstate = hstate[jnp.newaxis, :]
-                    print("hstate shape", hstate.shape)
+                    if isinstance(hstate, tuple):
+                        # print("hstate shape (tuple)", [x.shape for x in hstate])
+                        hstate = tuple(x[jnp.newaxis, :] for x in hstate)
+                        # print("hstate shape (tuple)", [x.shape for x in hstate])
+                    else:
+                        # print("hstate shape", hstate.shape)
+                        hstate = hstate[jnp.newaxis, :]
+                        # print("hstate shape", hstate.shape)
 
                 batch = (
                     hstate,
@@ -792,16 +1132,25 @@ def make_train(
             # (shaped_reward, original_reward, anneal_factor, combined_reward 등 포함)
             metric = traj_batch.info
 
+            # --------------------------------------------------------------
+            # entropy 통계 파생 메트릭
+            #   - policy_entropy_mean: rollout 전체 평균 엔트로피
+            # --------------------------------------------------------------
+            if "policy_entropy" in metric:
+                metric["policy_entropy_mean"] = metric["policy_entropy"].mean()
+
             # 손실 함수 관련 메트릭 추출
             total_loss, aux_data = loss_info
-            value_loss, loss_actor, entropy, ratio = aux_data
+            value_loss, loss_actor, entropy, ratio, pred_loss, pred_accuracy = aux_data
 
             # PPO 학습 손실 메트릭 추가
-            metric["total_loss"] = total_loss      # 전체 손실 (actor + value + entropy)
+            metric["total_loss"] = total_loss      # 전체 손실 (actor + value + entropy + pred)
             metric["value_loss"] = value_loss      # 가치 함수(critic) MSE 손실
             metric["loss_actor"] = loss_actor      # 정책(actor) clipped surrogate 손실
             metric["entropy"] = entropy            # 정책 엔트로피 (탐험 정도)
             metric["ratio"] = ratio                # PPO ratio (new_prob / old_prob)
+            metric["pred_loss"] = pred_loss        # 파트너 행동 예측 손실
+            metric["pred_accuracy"] = pred_accuracy # 파트너 행동 예측 정확도
 
             # 모든 메트릭 값을 배치/스텝 차원에 대해 평균 계산 (스칼라로 축약)
             metric = jax.tree_util.tree_map(lambda x: x.mean(), metric)
@@ -811,17 +1160,35 @@ def make_train(
             metric["update_step"] = update_step
             # 환경과 상호작용한 총 스텝 수 계산 (update * rollout_length * num_envs)
             metric["env_step"] = (
-                update_step * model_config["NUM_STEPS"] * model_config["NUM_ENVS"]
+                update_step * model_config["NUM_STEPS"] * model_config["NUM_ENVS"]                                                                 
             )
 
             # WandB 로깅 콜백: JAX 계산 그래프 밖에서 실행되도록 debug.callback 사용
             # 각 시드별로 구분된 네임스페이스(rng{seed}/)를 prefix로 추가하여 로깅
             def callback(metric, original_seed):
-                metric.update(
-                    {f"rng{int(original_seed)}/{k}": v for k, v in metric.items()}
-                )
-                wandb.log(metric)
+                # vmap을 사용하면 metric과 original_seed가 배치(배열) 형태로 들어옵니다.
+                # 따라서 배열인 경우 순회하며 각각 로깅해야 합니다.
+                
+                # numpy 변환 (호스트 측 실행이므로 안전)
+                original_seed = np.array(original_seed)
+                
+                if original_seed.ndim > 0:
+                    # 배치가 있는 경우 (vmap 사용 시)
+                    for i in range(original_seed.shape[0]):
+                        seed = original_seed[i]
+                        # 해당 시드의 메트릭만 추출
+                        single_metric = {k: v[i] for k, v in metric.items()}
+                        
+                        # print(f"[DEBUG] Logging for seed {seed}")
+                        wandb_log = {f"rng{int(seed)}/{k}": v for k, v in single_metric.items()}
+                        wandb.log(wandb_log)
+                else:
+                    # 스칼라인 경우 (단일 시드)
+                    # print(f"[DEBUG] Logging for seed {original_seed}")
+                    wandb_log = {f"rng{int(original_seed)}/{k}": v for k, v in metric.items()}
+                    wandb.log(wandb_log)
 
+            jax.debug.callback(callback, metric, original_seed)
             jax.debug.callback(callback, metric, original_seed)
 
             if num_checkpoints > 0:
@@ -846,6 +1213,11 @@ def make_train(
                 next_population_hstate,
                 last_population_annealing_mask,
                 next_fcp_pop_agent_idxs,
+                obs_history,
+                act_history,
+                last_partner_action,
+                next_last_action,
+                next_ego_idxs,
                 rng,
             )
             return runner_state, metric
@@ -877,6 +1249,15 @@ def make_train(
 
         rng, _rng = jax.random.split(rng)
 
+        # E3T History Buffers
+        initial_obs_history = jnp.zeros((model_config["NUM_ACTORS"], 5, *env.observation_space().shape))
+        initial_act_history = jnp.zeros((model_config["NUM_ACTORS"], 5), dtype=jnp.int32)
+        initial_last_partner_action = jnp.zeros((model_config["NUM_ACTORS"],), dtype=jnp.int32)
+        initial_last_action = jnp.zeros((model_config["NUM_ACTORS"],), dtype=jnp.int32)
+
+        # [E3T] Initial Ego Indices (Random init)
+        initial_ego_idxs = jax.random.randint(_rng, (model_config["NUM_ENVS"],), 0, env.num_agents)
+
         runner_state = (
             train_state,
             initial_checkpoints,
@@ -888,6 +1269,11 @@ def make_train(
             init_population_hstate,
             init_population_annealing_mask,
             init_fcp_pop_idxs,
+            initial_obs_history,
+            initial_act_history,
+            initial_last_partner_action,
+            initial_last_action,
+            initial_ego_idxs,
             _rng,
         )
         num_update_steps = model_config["NUM_UPDATES"]

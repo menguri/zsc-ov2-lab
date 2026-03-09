@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Change to script directory
+cd "$(dirname "$0")" || exit 1
+
 # Default values
 GPU_IDX=5
 NUM_SEEDS=10

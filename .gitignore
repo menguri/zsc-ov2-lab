@@ -200,3 +200,37 @@ overcooked_v2/
 **/*.h5
 **/*.pkl
 **/*.model
+**/*.pt
+**/*.onnx
+**/*.safetensors
+**/*.npz
+**/*.npy
+
+# -----------------------------------------------------------------------------
+# Local experiment artifacts (do not commit)
+# -----------------------------------------------------------------------------
+중요결과폴더/
+
+# Run/log directories
+**/runs/
+**/runs-backup/
+**/runs-past/
+**/wandb/
+**/.hydra/
+**/tb/
+**/tensorboard/
+**/logs/
+**/events.out.tfevents*
+
+# Checkpoint directory patterns
+**/ckpt_*/
+**/ckpt_final/
+**/model_ckpt/
+
+# Orbax/JAX checkpoint metadata files
+**/manifest.ocdbt
+**/ocdbt.process_*/
+**/_CHECKPOINT_METADATA
+**/_METADATA
+**/_strings.json
+**/_sharding

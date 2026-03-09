@@ -1,0 +1,11 @@
+**/wandb/
+**/tmp/
+**/outputs/
+**/results/
+# **/models/
+**/runs/
+**/fcp_populations/
+**/outputs/
+**/human_rl/imitation/models/
+**/human_rl/imitation/processed_data/
+**/.git/

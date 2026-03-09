@@ -1,0 +1,15 @@
+# @package _global_
+defaults:
+  - override /model: rnn
+
+# E3T 알고리즘 설정
+ALG_NAME: "E3T"
+
+# 파트너가 무작위 행동을 취할 확률 (0.5 = 50%)
+E3T_EPSILON: 0.5
+
+# 파트너 모델링 사용 여부 (True: 파트너 예측 네트워크 사용, False: 사용 안 함 - Ablation용)
+USE_PARTNER_MODELING: True
+
+# 파트너 예측 손실 계수
+PRED_LOSS_COEF: 1.0

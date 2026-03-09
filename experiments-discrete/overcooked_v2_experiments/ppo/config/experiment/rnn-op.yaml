@@ -1,0 +1,7 @@
+# @package _global_
+defaults:
+  - override /model: rnn-op
+
+env:
+  "ENV_KWARGS": 
+    "op_ingredient_permutations": [0,1]

@@ -1,0 +1,53 @@
+# @package _global_
+defaults:
+  - override /model: rnn
+
+# PH2 (dual-train) base setup
+ALG_NAME: "PH2-E3T"
+USE_PARTNER_MODELING: True
+PRED_LOSS_COEF: 1.0
+E3T_EPSILON: 0.0
+
+# Keep PH1 mechanics available (pool/sample/penalty), PH2 wrapper controls schedules.
+PH1_ENABLED: True
+PH1_STATE_MODE: True
+PH1_USE_PARTNER_PRED: True
+PH1_BETA: 1.0
+PH1_BETA_SCHEDULE_ENABLED: False
+PH1_BETA_START: 0.0
+PH1_BETA_END: 2.0
+# -1 => auto horizon: TOTAL_TIMESTEPS - PH1_WARMUP_STEPS
+PH1_BETA_SCHEDULE_HORIZON_ENV_STEPS: -1
+PH1_OMEGA: 1.0
+PH1_SIGMA: 1.0
+PH1_DISTANCE_THRESHOLD: 0.1
+PH1_POOL_SIZE: 128
+PH1_NORMAL_PROB: 0.5
+PH1_MULTI_PENALTY_ENABLED: False
+PH1_MAX_PENALTY_COUNT: 1
+PH1_MULTI_PENALTY_SINGLE_WEIGHT: 2.0
+PH1_MULTI_PENALTY_OTHER_WEIGHT: 1.0
+PH1_EPSILON: 0.0
+# PH2_EPSILON < 0 uses PH1_EPSILON fallback.
+PH2_EPSILON: -1.0
+PH1_WARMUP_STEPS: 0
+
+# PH2 training does not run online eval, but keeps eval snapshot cadence for post-hoc eval.
+PH1_EVAL_ENABLED: False
+PH1_EVAL_NUM_SEEDS: 1
+PH1_EVAL_VIZ_EPISODES: 0
+PH1_EVAL_VIZ_MAX_STEPS: 400
+PH1_EVAL_ROLLOUT_MAX_STEPS: 400
+PH1_EVAL_STOCHASTIC: False
+PH1_EVAL_EVERY_ENV_STEPS: 200000
+PH1_EVAL_LOG_VIDEO: False
+PH1_EVAL_DEFER_VIDEO: True
+PH1_EVAL_DISABLE_JIT: True
+PH1_EVAL_OFFLINE_ONLY: True
+
+# PH2 episode match schedule defaults
+PH2_RATIO_STAGE1: 2
+PH2_RATIO_STAGE2: 1
+PH2_RATIO_STAGE3: 2
+# Fixed ind-match probability default (50%). Set null to use stage schedule.
+PH2_FIXED_IND_PROB: 0.5

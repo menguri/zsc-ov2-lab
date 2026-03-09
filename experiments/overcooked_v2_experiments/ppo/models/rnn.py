@@ -3,10 +3,12 @@ from typing import Dict, Sequence
 import jax
 import jax.numpy as jnp
 import flax.linen as nn
+from flax.linen import remat
 import distrax
 from flax.linen.initializers import constant, orthogonal
 from .abstract import ActorCriticBase
 from .common import CNN, MLP
+from .e3t import PartnerPredictionModule, ScannedPartnerPredictor
 
 
 class ScannedRNN(nn.Module):
@@ -48,11 +50,64 @@ class ScannedRNN(nn.Module):
 
 class ActorCriticRNN(ActorCriticBase):
 
+    @staticmethod
+    def initialize_carry(batch_size, hidden_size, action_dim=6):
+        rnn_carry = ScannedRNN.initialize_carry(batch_size, hidden_size)
+        z_carry = jnp.zeros((batch_size, action_dim))
+        return (rnn_carry, z_carry)
+
     @nn.compact
-    def __call__(self, hidden, x, train=False):
+    def __call__(self, hidden, x, train=False, partner_prediction=None, obs_history=None, act_history=None):
+        # Unpack hidden state
+        if isinstance(hidden, tuple):
+            rnn_state, z_state = hidden
+        else:
+            rnn_state = hidden
+            z_state = jnp.zeros((hidden.shape[0], self.action_dim))
+
         obs, dones = x
 
-        # print("cnn shapes", hidden.shape, obs.shape, dones.shape)
+        # E3T 파트너 예측 추론 로직
+        # partner_prediction이 None이거나, 초기화(init)를 위해 obs_history가 있으면 실행
+        if obs_history is not None:
+            # Expand dims to add Time dimension for Scan (T_scan=1)
+            # obs_history: (Batch, Context, H, W, C) -> (1, Batch, Context, H, W, C)
+            # 만약 이미 6차원이라면 (Time, Batch, Context, ...) 그대로 둠
+            if obs_history.ndim == 5:
+                obs_history_seq = jnp.expand_dims(obs_history, axis=0)
+            else:
+                obs_history_seq = obs_history
+            
+            if act_history is None:
+                # act_history가 없으면 0으로 초기화 (Batch, Context)
+                # obs_history_seq가 (1, B, C, ...) 형태이므로 B, C 추출
+                B = obs_history_seq.shape[1]
+                C = obs_history_seq.shape[2]
+                act_history = jnp.zeros((B, C), dtype=jnp.int32)
+            
+            # act_history: (Batch, Context) -> (1, Batch, Context)
+            if act_history.ndim == 2:
+                act_history_seq = jnp.expand_dims(act_history, axis=0)
+            else:
+                act_history_seq = act_history
+            
+            predictor_in = (obs_history_seq, act_history_seq)
+            
+            # Use name="shared_predictor" to share parameters with predict_partner
+            # Run the predictor to ensure params are initialized or to get prediction
+            new_z_state, generated_prediction = ScannedPartnerPredictor(action_dim=self.action_dim, name="shared_predictor")(z_state, predictor_in)
+            
+            # Remove Time dimension: (1, Batch, Dim) -> (Batch, Dim)
+            # Scan 결과는 항상 Time 차원을 포함하므로, 단일 스텝인 경우 제거
+            if obs_history.ndim == 5:
+                new_z_state = new_z_state[0]
+                generated_prediction = generated_prediction[0]
+            
+            if partner_prediction is None:
+                z_state = new_z_state
+                partner_prediction = generated_prediction
+
+        # print("cnn shapes", rnn_state.shape, obs.shape, dones.shape)
 
         embedding = obs
 
@@ -61,65 +116,30 @@ class ActorCriticRNN(ActorCriticBase):
         else:
             activation = nn.tanh
 
-        # embedding_mlp = MLP(
-        #     hidden_size=self.config["FC_DIM_SIZE"],
-        #     output_size=self.config["FC_DIM_SIZE"],
-        #     activation=activation,
-        # )
-
-        # embedding = jax.vmap(
-        #     jax.vmap(embedding_mlp, in_axes=-2, out_axes=-2), in_axes=-2, out_axes=-2
-        # )(embedding)
-
         embed_model = CNN(
-            # output_size=self.config["FC_DIM_SIZE"] * 2,
             output_size=self.config["GRU_HIDDEN_DIM"],
             activation=activation,
         )
+
         embedding = jax.vmap(embed_model)(embedding)
 
         embedding = nn.LayerNorm()(embedding)
 
-        # embedding_1_mlp = MLP(
-        #     hidden_size=self.config["FC_DIM_SIZE"],
-        #     output_size=self.config["FC_DIM_SIZE"],
-        #     activation=activation,
-        # )
-        # embedding = jax.vmap(
-        #     jax.vmap(embedding_1_mlp, in_axes=-2, out_axes=-2), in_axes=-2, out_axes=-2
-        # )(embedding)
-
-        # embedding = nn.Dense(
-        #     self.config["GRU_HIDDEN_DIM"],
-        #     kernel_init=orthogonal(jnp.sqrt(2)),
-        #     bias_init=constant(0.0),
-        # )(embedding)
+        # E3T Conditioning (Layer 4)
+        if partner_prediction is not None:
+            # Defensive check: squeeze extra dimension if present (e.g. (Batch, 1, Time, Dim))
+            if partner_prediction.ndim > embedding.ndim:
+                partner_prediction = partner_prediction.squeeze(axis=1)
+            embedding = jnp.concatenate([embedding, partner_prediction], axis=-1)
 
         rnn_in = (embedding, dones)
-        # print("rnn_in shapes", hidden.shape, rnn_in[0].shape, rnn_in[1].shape)
-        hidden, embedding = ScannedRNN()(hidden, rnn_in)
-
-        # embedding = nn.Dense(
-        #     self.config["FC_DIM_SIZE"],
-        #     kernel_init=orthogonal(jnp.sqrt(2)),
-        #     bias_init=constant(0.0),
-        # )(embedding)
-
-        # embedding_2_mlp = MLP(
-        #     hidden_size=self.config["FC_DIM_SIZE"],
-        #     output_size=self.config["FC_DIM_SIZE"],
-        #     activation=activation,
-        # )
-        # embedding = jax.vmap(
-        #     jax.vmap(embedding_2_mlp, in_axes=-2, out_axes=-2), in_axes=-2, out_axes=-2
-        # )(embedding)
+        rnn_state, embedding = ScannedRNN()(rnn_state, rnn_in)
 
         actor_mean = nn.Dense(
             self.config["FC_DIM_SIZE"],
             kernel_init=orthogonal(jnp.sqrt(2)),
             bias_init=constant(0.0),
         )(embedding)
-        # actor_mean = nn.BatchNorm(use_running_average=not self.train)(actor_mean)
         actor_mean = activation(actor_mean)
         actor_mean = nn.Dense(
             self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0)
@@ -132,17 +152,68 @@ class ActorCriticRNN(ActorCriticBase):
             kernel_init=orthogonal(jnp.sqrt(2)),
             bias_init=constant(0.0),
         )(embedding)
-        # critic = nn.BatchNorm(use_running_average=not self.train)(critic)
         critic = activation(critic)
         critic = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0))(
             critic
         )
 
-        # print(
-        #     "output shapes",
-        #     hidden.shape,
-        #     pi.logits.shape,
-        #     jnp.squeeze(critic, axis=-1).shape,
-        # )
+        return (rnn_state, z_state), pi, jnp.squeeze(critic, axis=-1)
 
-        return hidden, pi, jnp.squeeze(critic, axis=-1)
+    @nn.compact
+    def predict_partner(self, obs_history, act_history, z_state=None):
+        """
+        E3T Partner Prediction
+        Args:
+            obs_history: (Batch, 5, H, W, C)
+            act_history: (Batch, 5)
+            z_state: (Batch, ActionDim) - Optional
+        Returns:
+            partner_prediction: (Batch, ActionDim)
+        """
+        # If z_state is not provided (e.g. initialization), use zeros
+        batch_size = obs_history.shape[0]
+        if z_state is None:
+            z_state = jnp.zeros((batch_size, self.action_dim))
+            
+        # Add Time dimension for Scanned module: (1, Batch, ...)
+        obs_history_seq = obs_history[jnp.newaxis, ...]
+        act_history_seq = act_history[jnp.newaxis, ...]
+        
+        predictor_in = (obs_history_seq, act_history_seq)
+        
+        # Use name="shared_predictor" to share parameters with __call__
+        # We ignore the new z_state here as this method is for prediction output only
+        _, partner_prediction_seq = ScannedPartnerPredictor(action_dim=self.action_dim, name="shared_predictor")(z_state, predictor_in)
+        
+        # Remove Time dimension: (1, Batch, Dim) -> (Batch, Dim)
+        result = partner_prediction_seq[0]
+        # If result has extra dimension (Batch, 1, Time, Dim), squeeze it
+        if result.ndim == 4 and result.shape[1] == 1:
+            result = result.squeeze(axis=1)
+        return result
+
+    @nn.compact
+    def predict_partner_trajectory(self, obs_history, act_history, z_init=None):
+        """
+        E3T Partner Prediction for Trajectory (Scan)
+        Args:
+            obs_history: (T, Batch, Context, H, W, C)
+            act_history: (T, Batch, Context)
+            z_init: (Batch, ActionDim) - Optional
+        Returns:
+            partner_prediction: (T, Batch, ActionDim)
+        """
+        # obs_history가 (T, B, Context, ...) 형태인지 확인
+        # 만약 (T, B, H, W, C)라면 Context 차원이 누락된 것일 수 있음 (주의)
+        # 하지만 여기서는 호출자가 올바르게 준다고 가정 (ippo.py에서 처리됨)
+        
+        T, B = obs_history.shape[:2]
+        if z_init is None:
+            z_init = jnp.zeros((B, self.action_dim))
+            
+        predictor_in = (obs_history, act_history)
+        
+        # Use name="shared_predictor" to share parameters
+        _, partner_prediction = ScannedPartnerPredictor(action_dim=self.action_dim, name="shared_predictor")(z_init, predictor_in)
+        
+        return partner_prediction

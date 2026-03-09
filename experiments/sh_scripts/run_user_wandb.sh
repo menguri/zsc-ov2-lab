@@ -1,29 +1,24 @@
 # ------------------------------------------------------------------------------
-# run_overcooked.sh — JAX-AHT OvercookedV2 PPO launcher (uv/conda 무관)
+# run_user_wandb.sh — JAX-AHT OvercookedV2 PPO launcher (uv/conda 무관)
 # ------------------------------------------------------------------------------
 
 #!/usr/bin/env bash
 set -euo pipefail
 
 # ==============================================================================
-# 0) 기본값 설정 (환경변수로 덮어쓰기 가능)
+# 1) 기본값 설정 (환경변수로 덮어쓰기 가능)
 # ==============================================================================
 
 : "${CUDA_VISIBLE_DEVICES:=0}"                 # GPU 할당 (콤마 구분: 예 0,1)
-: "${WANDB_PROJECT:=jax-aht}"                  # W&B 프로젝트명
-: "${WANDB_ENTITY:=tatalintelli-university-of-seoul}"
+: "${WANDB_PROJECT:=zsc-experiment}"                  # W&B 프로젝트명
+: "${WANDB_ENTITY:=m-personal-experiment}"
 : "${NUM_SEEDS:=10}"                           # 실험 시드 수
 : "${NUM_ITERATIONS:=1}"
 
 # 환경/실험 프리셋
 : "${ENV_GROUP:=original}"                     # 예: original, grounded_coord_simple, test_time_wide
 : "${LAYOUT:=cramped_room}"                   # ENV_GROUP=original 일 때 사용
-: "${EXPERIMENT:=cnn}"                         # 예: cnn, rnn-op, rnn-sa, rnn-fcp, panic-sp
-
-# Panic (partner random action) defaults
-: "${PANIC_ENABLED:=0}"        # 1 => enable panic window
-: "${PANIC_START_STEP:=50}"    # default start step within episode
-: "${PANIC_DURATION:=30}"      # default duration (steps)
+: "${EXPERIMENT:=cnn}"                         # 예: cnn, rnn-op, rnn-sa, rnn-fcp
 
 # JAX 메모리 설정
 : "${XLA_PYTHON_CLIENT_PREALLOCATE:=false}"    # 메모리 선할당 방지
@@ -34,7 +29,6 @@ set -euo pipefail
 
 # XLA_FLAGS: 기본 CUDA data dir 설정
 : "${XLA_FLAGS:=--xla_gpu_cuda_data_dir=${CUDA_HOME:-/usr/local/cuda-12.2}}"
-
 
 # cuPTI 경로 (CUDA 12.2 기준)
 if [ -d "/usr/local/cuda-12.2/extras/CUPTI/lib64" ]; then
@@ -49,7 +43,7 @@ export XLA_FLAGS
 export PATH="/home/mlic/mingukang/ex-overcookedv2/overcookedv2/bin:$PATH"
 
 # ==============================================================================
-# GPU / CUDA 관련 환경 변수
+# 2) GPU / CUDA 환경 설정
 # ==============================================================================
 
 # CUDA_VISIBLE_DEVICES 기본값 재확인 (필요 시 사용자 지정 가능)
@@ -109,32 +103,6 @@ echo "[INFO] JAX 플랫폼: JAX_PLATFORMS=$JAX_PLATFORMS"
 echo "[INFO] CUDA 경로: CUDA_HOME=$CUDA_HOME"
 echo "[INFO] LD_LIBRARY_PATH: ${LD_LIBRARY_PATH:-}"
 
-# ==============================================================================
-# 1) 스크립트 위치/경로 정리
-# ==============================================================================
-
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
-
-# ==============================================================================
-# 2) Weights & Biases API 키 로드
-# ==============================================================================
-
-WANDB_KEY_FILE="$SCRIPT_DIR/../wandb_info/wandb_api_key"
-if [[ -f "$WANDB_KEY_FILE" ]]; then
-  export WANDB_API_KEY="$(<"$WANDB_KEY_FILE")"
-else
-  echo "[ERR] W&B API key file not found: $WANDB_KEY_FILE"
-  echo "      Create the file and put your API key in a single line."
-  exit 1
-fi
-
-# ==============================================================================
-# 3) 선택적 인자 파싱
-#   예) ./run_overcooked.sh --env grounded_coord_simple --exp rnn-op \
-#           --seeds 10 --tags 'zsc,aht' --notes 'ablation-1'
-# ==============================================================================
-
 NOTES=""
 TAGS=""
 SEEDS_EXPLICIT="0"
@@ -145,6 +113,8 @@ ENV_DEVICE=""                 # env를 CPU/GPU 어디에 둘지: cpu|gpu (기본
 CAST_OBS_BF16="0"             # 관측을 bf16으로 캐스팅하여 메모리 절감
 MODEL_NUM_ENVS_OVERRIDE=""    # model.NUM_ENVS override
 MODEL_NUM_STEPS_OVERRIDE=""   # model.NUM_STEPS override
+USE_PM_OVERRIDE=""            # USE_PARTNER_MODELING override
+PRED_COEF_OVERRIDE=""         # PRED_LOSS_COEF override
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -163,10 +133,10 @@ while [[ $# -gt 0 ]]; do
     --env-device) ENV_DEVICE="$2"; shift 2;;     # cpu|gpu
     --bf16-obs)   CAST_OBS_BF16="1"; shift 1;;
     --nenvs)      MODEL_NUM_ENVS_OVERRIDE="$2"; shift 2;;
-  --nsteps)     MODEL_NUM_STEPS_OVERRIDE="$2"; shift 2;;
-  --panic)      PANIC_ENABLED=1; shift 1;;
-  --panic-start) PANIC_START_STEP="$2"; shift 2;;
-  --panic-duration) PANIC_DURATION="$2"; shift 2;;
+    --nsteps)     MODEL_NUM_STEPS_OVERRIDE="$2"; shift 2;;
+    --e3t-epsilon) E3T_EPSILON="$2"; shift 2;;
+    --use-partner-modeling) USE_PM_OVERRIDE="$2"; shift 2;;
+    --pred-loss-coef) PRED_COEF_OVERRIDE="$2"; shift 2;;
     --mem-frac)   XLA_PYTHON_CLIENT_MEM_FRACTION="$2"; shift 2;;
     --fcp-device) FCP_DEVICE="$2"; shift 2 ;;
     --)           shift; break;;
@@ -200,11 +170,6 @@ fi
 echo "  Env Group    : $ENV_GROUP"
 echo "  Layout       : $LAYOUT"
 echo "  Experiment   : $EXPERIMENT"
-if [[ "$PANIC_ENABLED" == "1" ]]; then
-  echo "  Panic        : ENABLED (start=$PANIC_START_STEP, duration=$PANIC_DURATION)"
-else
-  echo "  Panic        : disabled"
-fi
 echo "  W&B Project  : $WANDB_PROJECT"
 echo "  W&B Entity   : $WANDB_ENTITY"
 
@@ -225,13 +190,7 @@ fi
 echo "==============================================================="
 
 # ==============================================================================
-# 5) 파이썬 진입 전 빠른 진단은 가상환경 활성화 이후로 이동
-# ==============================================================================
-
-export CUDA_VISIBLE_DEVICES
-
-# ==============================================================================
-# 0.5) 선택 GPU 메모리 상태 표시 및 경고
+# 5) GPU 메모리 상태 확인 및 진단
 # ==============================================================================
 
 if command -v nvidia-smi >/dev/null 2>&1; then
@@ -264,7 +223,7 @@ if command -v nvidia-smi >/dev/null 2>&1; then
 fi
 
 # ==============================================================================
-# 5.5) W&B 태그 구성 (실험/환경/레이아웃 + 사용자 태그)
+# 6) W&B 태그 구성 (실험/환경/레이아웃 + 사용자 태그)
 # ==============================================================================
 
 # 1) 기본 태그 리스트 구성
@@ -295,7 +254,7 @@ TAGS_SERIALIZED=$(serialize_tags "${RAW_TAGS[@]}")
 WANDB_TAGS_ARG="+wandb.tags=[${TAGS_SERIALIZED}]"
 
 # ==============================================================================
-# 6) 학습 실행 (Hydra 인자 구성 및 main 실행)
+# 7) 학습 실행 (Hydra 인자 구성 및 main 실행)
 # ==============================================================================
 
 PY_ARGS=(
@@ -350,9 +309,19 @@ if [[ -n "$MODEL_NUM_STEPS_OVERRIDE" ]]; then
   PY_ARGS+=("model.NUM_STEPS=${MODEL_NUM_STEPS_OVERRIDE}")
 fi
 
-# Panic overrides appended if enabled (Hydra keys defined in base.yaml)
-if [[ "$PANIC_ENABLED" == "1" ]]; then
-  PY_ARGS+=("panic.enabled=true" "panic.start_step=${PANIC_START_STEP}" "panic.duration=${PANIC_DURATION}")
+# E3T epsilon override
+if [[ -v E3T_EPSILON && -n "$E3T_EPSILON" ]]; then
+  PY_ARGS+=("E3T_EPSILON=${E3T_EPSILON}")
+fi
+
+# E3T partner modeling override
+if [[ -n "$USE_PM_OVERRIDE" ]]; then
+  PY_ARGS+=("USE_PARTNER_MODELING=${USE_PM_OVERRIDE}")
+fi
+
+# E3T prediction loss coefficient override
+if [[ -n "$PRED_COEF_OVERRIDE" ]]; then
+  PY_ARGS+=("PRED_LOSS_COEF=${PRED_COEF_OVERRIDE}")
 fi
 
 # ====================================================
@@ -362,7 +331,16 @@ cd ~/mingukang/ex-overcookedv2
 # 1) uv env 활성화
 source overcooked_v2/bin/activate
 
-# 2) 파이썬 진단 (가상환경 활성화 후)
+# 2) WandB 로그인
+if [[ -f "experiments/wandb_info/wandb_api_key" ]]; then
+  export WANDB_API_KEY=$(cat experiments/wandb_info/wandb_api_key)
+  echo "[INFO] WandB API key loaded from wandb_info/wandb_api_key"
+  wandb login "$WANDB_API_KEY"
+else
+  echo "[WARN] WandB API key file not found at experiments/wandb_info/wandb_api_key"
+fi
+
+# 3) 파이썬 진단 (가상환경 활성화 후)
 env -u LD_LIBRARY_PATH -u XLA_FLAGS python - <<'PY' 2>&1 | filter_ptx
 import os
 import jax
@@ -386,4 +364,3 @@ cd experiments
 
 env -u LD_LIBRARY_PATH -u XLA_FLAGS \
   python overcooked_v2_experiments/ppo/main.py "${PY_ARGS[@]}" 2>&1 | filter_ptx
-
