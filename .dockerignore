@@ -1,0 +1,46 @@
+# VCS
+**/.git/
+**/.gitignore
+
+# Python caches
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.pytest_cache/
+**/.mypy_cache/
+
+# Experiment outputs and logs
+**/wandb/
+**/runs/
+**/runs-backup/
+**/runs-past/
+**/outputs/
+**/results/
+**/logs/
+**/tmp/
+**/.hydra/
+
+# Common large artifacts
+**/*.ckpt
+**/*.pth
+**/*.pt
+**/*.h5
+**/*.pkl
+**/*.safetensors
+**/*.npz
+**/*.npy
+**/manifest.ocdbt
+**/ocdbt.process_*/
+**/_CHECKPOINT_METADATA
+**/_METADATA
+**/_strings.json
+**/_sharding
+
+# Local envs
+**/.venv/
+**/venv/
+**/env/
+
+# Local result backups
+중요결과폴더/
+experiments-stablock(backup)/
