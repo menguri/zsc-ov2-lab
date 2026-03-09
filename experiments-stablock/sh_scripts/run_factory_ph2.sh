@@ -27,16 +27,12 @@ NSTEPS=256
 : "${PH1_DIST_THRESH:=0.1}"
 : "${PH1_POOL_SIZE:=128}"
 : "${PH1_NORMAL_PROB:=0.5}"
+: "${PH1_MULTI_PENALTY_ENABLED:=True}"
+: "${PH1_MULTI_PENALTY_SINGLE_WEIGHT:=2.0}"
+: "${PH1_MULTI_PENALTY_OTHER_WEIGHT:=1.0}"
 : "${PH1_EPSILON:=0.2}"
 : "${PH2_EPSILON:=0.2}"
 : "${PH1_WARMUP_STEPS:=2000000}"
-: "${PH1_CONTRASTIVE_ENABLED:=False}"
-: "${PH1_CONTRASTIVE_COEF:=0.05}"
-: "${PH1_CONTRASTIVE_TEMP:=0.1}"
-: "${PH1_CONTRASTIVE_PROJ_DIM:=64}"
-: "${PH1_CONTRASTIVE_ENTRY_DROPOUT:=0.05}"
-: "${PH1_CONTRASTIVE_MULTI_POS:=True}"
-: "${PH1_CONTRASTIVE_DENOM_TRAIN_MASK:=True}"
 : "${PH1_EVAL_ENABLED:=False}"
 : "${PH1_EVAL_EVERY_ENV_STEPS:=1000000}"
 : "${PH1_EVAL_VIDEO_EVERY_ENV_STEPS:=1000000}"
@@ -58,11 +54,9 @@ run_ph2() {
   local env=$2
   local ph1_omega=${3:-$PH1_OMEGA}
   local ph1_sigma=${4:-$PH1_SIGMA}
+  local ph1_max_penalty_count=${5:-1}
 
-  local tags="ph2,e3t"
-  if [[ "${PH1_CONTRASTIVE_ENABLED}" == "True" || "${PH1_CONTRASTIVE_ENABLED}" == "true" || "${PH1_CONTRASTIVE_ENABLED}" == "1" ]]; then
-    tags="${tags},contrastive"
-  fi
+  local tags="ph2,e3t,multi_penalty_max${ph1_max_penalty_count}"
 
   local -a cmd=("./run_user_wandb.sh"
     --gpus "$gpus"
@@ -84,15 +78,12 @@ run_ph2() {
     --ph1-dist $PH1_DIST_THRESH \
     --ph1-pool-size $PH1_POOL_SIZE \
     --ph1-normal-prob $PH1_NORMAL_PROB \
+    --ph1-multi-penalty-enabled $PH1_MULTI_PENALTY_ENABLED \
+    --ph1-max-penalty-count $ph1_max_penalty_count \
+    --ph1-multi-penalty-single-weight $PH1_MULTI_PENALTY_SINGLE_WEIGHT \
+    --ph1-multi-penalty-other-weight $PH1_MULTI_PENALTY_OTHER_WEIGHT \
     --ph1-epsilon $PH1_EPSILON \
     --ph1-warmup-steps $PH1_WARMUP_STEPS \
-    --ph1-contrastive-enabled $PH1_CONTRASTIVE_ENABLED \
-    --ph1-contrastive-coef $PH1_CONTRASTIVE_COEF \
-    --ph1-contrastive-temp $PH1_CONTRASTIVE_TEMP \
-    --ph1-contrastive-proj-dim $PH1_CONTRASTIVE_PROJ_DIM \
-    --ph1-contrastive-entry-dropout $PH1_CONTRASTIVE_ENTRY_DROPOUT \
-    --ph1-contrastive-multi-pos $PH1_CONTRASTIVE_MULTI_POS \
-    --ph1-contrastive-denom-train-mask $PH1_CONTRASTIVE_DENOM_TRAIN_MASK \
     --ph1-eval-enabled $PH1_EVAL_ENABLED \
     --ph1-eval-every-env-steps $PH1_EVAL_EVERY_ENV_STEPS \
     --ph1-eval-video-every-env-steps $PH1_EVAL_VIDEO_EVERY_ENV_STEPS \
@@ -117,32 +108,21 @@ run_ph2() {
   "${cmd[@]}"
 }
 
-# Example:
-# PH1_CONTRASTIVE_ENABLED=True PH2_EPSILON=0.2 \
-#   ./run_factory_ph2.sh
-
 # -----------------------------------------------------------------------------
-# PH2 Sweep
-# - Envs: OV1 only (exclude counter_circuit)
-# - Omega: 10.0 fixed
-# - Sigma: 2.0 fixed
-# - Sequential execution on the same GPU set to avoid overlap/OOM
+# PH2 Preset: counter_circuit / multi-penalty max-count sweep (1,2,3,4)
+# - Sequential execution to avoid overlap
 # -----------------------------------------------------------------------------
 SWEEP_GPUS="0,1,2,3,4"
-SWEEP_ENVS=("asymm_advantages" "coord_ring" "cramped_room" "forced_coord")
-SWEEP_OMEGAS=(10.0)
-SWEEP_SIGMAS=(2.0)
+TARGET_ENV="counter_circuit"
+TARGET_OMEGA=10.0
+TARGET_SIGMA=2.0
+MAX_COUNTS=(3 2 1)
 
-echo "[PH2-SWEEP] start: gpus=$SWEEP_GPUS"
+echo "[PH2-SWEEP] start: env=$TARGET_ENV gpus=$SWEEP_GPUS"
 
-for env in "${SWEEP_ENVS[@]}"; do
-  for omega in "${SWEEP_OMEGAS[@]}"; do
-    for sigma in "${SWEEP_SIGMAS[@]}"; do
-      echo "[PH2-SWEEP] env=$env omega=$omega sigma=$sigma"
-      # Sweep blocked-target parameters for PH1 latent penalty terms.
-      run_ph2 "$SWEEP_GPUS" "$env" "$omega" "$sigma"
-    done
-  done
+for max_count in "${MAX_COUNTS[@]}"; do
+  echo "[PH2-SWEEP] env=$TARGET_ENV omega=$TARGET_OMEGA sigma=$TARGET_SIGMA max_penalty_count=$max_count"
+  run_ph2 "$SWEEP_GPUS" "$TARGET_ENV" "$TARGET_OMEGA" "$TARGET_SIGMA" "$max_count"
 done
 
 echo "[PH2-SWEEP] all jobs finished."

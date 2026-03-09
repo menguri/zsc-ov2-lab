@@ -3,6 +3,105 @@ import jax.numpy as jnp
 from functools import partial
 
 
+def _normalize_probs(probs: jnp.ndarray) -> jnp.ndarray:
+    probs = jnp.asarray(probs, dtype=jnp.float32)
+    denom = jnp.sum(probs)
+    return jnp.where(denom > 0.0, probs / denom, jnp.zeros_like(probs))
+
+
+def sample_penalty_count(
+    rng,
+    max_penalty_count: int,
+    single_weight: float = 2.0,
+    other_weight: float = 1.0,
+):
+    """Sample penalty-state count in [1, max_penalty_count] with weighted odds."""
+    max_penalty_count = max(1, int(max_penalty_count))
+    weights = jnp.full((max_penalty_count,), jnp.float32(other_weight))
+    weights = weights.at[0].set(jnp.float32(single_weight))
+    probs = _normalize_probs(weights)
+    idx = jax.random.choice(rng, max_penalty_count, p=probs)
+    return jnp.int32(idx + 1)
+
+
+def sample_multi_targets_from_pool(
+    rng,
+    pool_env: jnp.ndarray,
+    probs_env: jnp.ndarray,
+    max_penalty_count: int,
+    single_weight: float = 2.0,
+    other_weight: float = 1.0,
+):
+    """Sample up to K unique targets from pool using PH1 probs and value-based dedup.
+
+    Returns:
+      targets: (K, ...)
+      valid_mask: (K,)
+      sampled_count: scalar int32 in [1, K]
+    """
+    k = max(1, int(max_penalty_count))
+    pool_size = int(pool_env.shape[0])
+    reduce_axes = tuple(range(1, int(pool_env.ndim)))
+
+    none_target = jnp.full(pool_env.shape[1:], -1, dtype=pool_env.dtype)
+    init_targets = jnp.broadcast_to(none_target, (k,) + pool_env.shape[1:])
+    init_valid = jnp.zeros((k,), dtype=jnp.bool_)
+
+    # Candidate probabilities come from PH1 v-gap distribution (exclude trailing "normal" bin).
+    cand_probs = jnp.asarray(probs_env[:pool_size], dtype=jnp.float32)
+    valid_candidate = ~jnp.all(pool_env == -1, axis=reduce_axes)
+    cand_probs = cand_probs * valid_candidate.astype(jnp.float32)
+    cand_probs = _normalize_probs(cand_probs)
+
+    rng_count, rng_slots = jax.random.split(rng)
+    sampled_count = sample_penalty_count(
+        rng_count,
+        max_penalty_count=k,
+        single_weight=single_weight,
+        other_weight=other_weight,
+    )
+    slot_keys = jax.random.split(rng_slots, k)
+
+    def _sample_one(slot_idx, carry):
+        targets, valid_mask, probs = carry
+
+        def _do_sample(inner_carry):
+            targets_cur, valid_cur, probs_cur = inner_carry
+            p_sum = jnp.sum(probs_cur)
+
+            def _pick(pick_carry):
+                t_cur, v_cur, p_cur = pick_carry
+                picked_idx = jax.random.choice(slot_keys[slot_idx], pool_size, p=p_cur)
+                picked = pool_env[picked_idx]
+                # Remove all candidates equal to selected state to avoid duplicates.
+                same_state = jnp.all(pool_env == picked, axis=reduce_axes)
+                p_next = jnp.where(same_state, 0.0, p_cur)
+                p_next = _normalize_probs(p_next)
+                t_next = t_cur.at[slot_idx].set(picked)
+                v_next = v_cur.at[slot_idx].set(True)
+                return t_next, v_next, p_next
+
+            return jax.lax.cond(
+                p_sum > 0.0,
+                _pick,
+                lambda c: c,
+                operand=(targets_cur, valid_cur, probs_cur),
+            )
+
+        return jax.lax.cond(
+            slot_idx < sampled_count,
+            _do_sample,
+            lambda c: c,
+            operand=carry,
+        )
+
+    targets, valid_mask, _ = jax.lax.fori_loop(
+        0, k, _sample_one, (init_targets, init_valid, cand_probs)
+    )
+
+    return targets, valid_mask, sampled_count
+
+
 def calculate_v_spec(
     apply_fn,
     params,
@@ -50,7 +149,12 @@ def calculate_v_spec(
 
 @partial(
     jax.jit,
-    static_argnames=["apply_fn", "use_partner_pred", "use_blocked_input"],
+    static_argnames=[
+        "apply_fn",
+        "use_partner_pred",
+        "use_blocked_input",
+        "blocked_input_slots",
+    ],
 )
 def compute_ph1_probs(
     apply_fn,
@@ -63,6 +167,7 @@ def compute_ph1_probs(
     candidate_agent_idx=None,
     use_partner_pred: bool = True,
     use_blocked_input: bool = True,
+    blocked_input_slots: int = 1,
     beta: float = 1.0,
     normal_prob: float = 0.5
 ):
@@ -84,13 +189,26 @@ def compute_ph1_probs(
         v_gaps: (N+1,) - 각 후보의 V_gap (마지막은 0.0)
     """
     batch_size = batch_obs.shape[0]
+    blocked_input_slots = max(1, int(blocked_input_slots))
     
     # 1. Normal Value (Target = -1) 계산
     # candidate_targets: (N, H, W, C)
     target_shape = candidate_targets.shape[1:] 
     dummy_shape = (batch_size,) + target_shape
-        
-    normal_target = jnp.full(dummy_shape, -1, dtype=jnp.float32)
+
+    def _pack_blocked_slots(single_target_batch):
+        if (not use_blocked_input) or (blocked_input_slots <= 1):
+            return single_target_batch
+        packed = jnp.full(
+            (batch_size, blocked_input_slots) + target_shape,
+            -1,
+            dtype=single_target_batch.dtype,
+        )
+        packed = packed.at[:, 0].set(single_target_batch)
+        return packed
+
+    normal_target_single = jnp.full(dummy_shape, -1, dtype=jnp.float32)
+    normal_target = _pack_blocked_slots(normal_target_single)
     
     # 2. Compute V(s, normal) ONCE (shared across candidates)
     partner_pred_batch = None
@@ -115,7 +233,10 @@ def compute_ph1_probs(
     def _get_v_gap_single(candidate_k):
         # candidate_k shape: (...)
         # Expand: (H,W,C) -> (B, H,W,C)
-        blocked = jnp.tile(candidate_k[None, ...], (batch_size,) + (1,) * candidate_k.ndim)
+        blocked_single = jnp.tile(
+            candidate_k[None, ...], (batch_size,) + (1,) * candidate_k.ndim
+        )
+        blocked = _pack_blocked_slots(blocked_single)
         v_t = calculate_v_spec(
             apply_fn,
             params,

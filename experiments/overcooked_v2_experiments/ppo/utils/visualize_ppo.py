@@ -152,21 +152,6 @@ def visualize_ppo_policy(
                     alg = cfg.get("ALG_NAME", "PPO")
                     if "alg" in cfg:
                         alg = cfg["alg"].get("ALG_NAME", alg)
-                    
-                    # Check for STL (anchor)
-                    # config 구조가 다양할 수 있으므로 여러 경로 확인
-                    is_anchor = False
-                    if "anchor" in cfg:
-                        is_anchor = cfg["anchor"]
-                    elif "alg" in cfg and "anchor" in cfg["alg"]:
-                        is_anchor = cfg["alg"]["anchor"]
-                    # model config 내부에 있을 수도 있음 (예: config.model.anchor)
-                    elif "model" in cfg and "anchor" in cfg["model"]:
-                        is_anchor = cfg["model"]["anchor"]
-                    
-                    if alg == "E3T" and is_anchor:
-                        alg = "STL"
-                        
                     current_algs.append(alg)
                 current_algs = tuple(current_algs)
                 
@@ -179,18 +164,6 @@ def visualize_ppo_policy(
                 if "alg" in cfg:
                     alg = cfg["alg"].get("ALG_NAME", alg)
                 
-                # Check for STL (anchor)
-                is_anchor = False
-                if "anchor" in cfg:
-                    is_anchor = cfg["anchor"]
-                elif "alg" in cfg and "anchor" in cfg["alg"]:
-                    is_anchor = cfg["alg"]["anchor"]
-                elif "model" in cfg and "anchor" in cfg["model"]:
-                    is_anchor = cfg["model"]["anchor"]
-                
-                if alg == "E3T" and is_anchor:
-                    alg = "STL"
-                
                 current_configs = [cfg] * num_actors
                 current_algs = tuple([alg] * num_actors)
             
@@ -198,8 +171,6 @@ def visualize_ppo_policy(
             # Heuristic: if any E3T, use E3T. Else use first.
             if "E3T" in current_algs:
                 alg_arg = "E3T"
-            elif "STL" in current_algs:
-                alg_arg = "STL"
             else:
                 alg_arg = current_algs[0]
             

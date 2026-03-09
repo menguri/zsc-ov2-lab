@@ -67,7 +67,7 @@ class ActorCriticRNN(ActorCriticBase):
 
         obs, dones = x
 
-        # E3T / STL 추론 로직
+        # E3T 파트너 예측 추론 로직
         # partner_prediction이 None이거나, 초기화(init)를 위해 obs_history가 있으면 실행
         if obs_history is not None:
             # Expand dims to add Time dimension for Scan (T_scan=1)
@@ -91,8 +91,6 @@ class ActorCriticRNN(ActorCriticBase):
             else:
                 act_history_seq = act_history
             
-            # STL Prediction
-            # STL Removed
             predictor_in = (obs_history_seq, act_history_seq)
             
             # Use name="shared_predictor" to share parameters with predict_partner

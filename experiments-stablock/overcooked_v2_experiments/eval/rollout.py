@@ -101,35 +101,44 @@ def get_rollout(
         or ph1_enabled
     )
     policy0_cfg = getattr(policies[0], "config", {}) if len(policies) > 0 else {}
-    ph1_contrastive_enabled = bool(policy0_cfg.get("PH1_CONTRASTIVE_ENABLED", False))
+    ph1_multi_penalty_enabled = bool(policy0_cfg.get("PH1_MULTI_PENALTY_ENABLED", False))
+    ph1_max_penalty_count = int(policy0_cfg.get("PH1_MAX_PENALTY_COUNT", 1))
     if isinstance(policy0_cfg, dict) and "alg" in policy0_cfg:
-        ph1_contrastive_enabled = bool(
-            policy0_cfg["alg"].get("PH1_CONTRASTIVE_ENABLED", ph1_contrastive_enabled)
+        ph1_multi_penalty_enabled = bool(
+            policy0_cfg["alg"].get(
+                "PH1_MULTI_PENALTY_ENABLED", ph1_multi_penalty_enabled
+            )
         )
-    metric_encode_method_name = (
-        "encode_blocked_metric" if ph1_contrastive_enabled else "encode_blocked"
-    )
+        ph1_max_penalty_count = int(
+            policy0_cfg["alg"].get("PH1_MAX_PENALTY_COUNT", ph1_max_penalty_count)
+        )
+    ph1_max_penalty_count = max(1, ph1_max_penalty_count)
+    ph1_penalty_slots = ph1_max_penalty_count if ph1_multi_penalty_enabled else 1
 
     def _encode_policy_metric_emb(policy, blocked_actor):
-        method = getattr(policy.network, metric_encode_method_name, None)
-        if method is None:
-            method = policy.network.encode_blocked
         return policy.network.apply(
             policy.params,
             blocked_actor,
-            method=method,
+            method=policy.network.encode_blocked,
         )
 
-    def _get_blocked_metric_from_extras(agent_extras, fallback):
-        if not isinstance(agent_extras, dict):
-            return fallback
-        metric = agent_extras.get("blocked_metric_emb", None)
-        if metric is not None:
-            return metric
-        blocked = agent_extras.get("blocked_emb", None)
-        if blocked is not None:
-            return blocked
-        return fallback
+    def _get_blocked_metric_slots_from_extras(agent_extras, fallback_slot):
+        if isinstance(agent_extras, dict):
+            slot_metric = agent_extras.get("blocked_emb_slots", None)
+            if slot_metric is not None:
+                slot_metric = jnp.asarray(slot_metric, dtype=jnp.float32)
+                if slot_metric.ndim == 1:
+                    slot_metric = slot_metric[None, :]
+                return slot_metric
+        fallback = fallback_slot
+        if isinstance(agent_extras, dict):
+            fallback = agent_extras.get("blocked_emb", fallback_slot)
+        fallback = jnp.asarray(fallback, dtype=jnp.float32)
+        if fallback.ndim == 1:
+            fallback = fallback[None, :]
+        if fallback.shape[0] == 1 and ph1_penalty_slots > 1:
+            fallback = jnp.tile(fallback, (ph1_penalty_slots, 1))
+        return fallback[:ph1_penalty_slots]
 
     # Optional backend pinning for environment interaction.
     reset_fn = env.reset
@@ -191,6 +200,91 @@ def get_rollout(
             raise ValueError("et_candidates and target_agent are required when value_by_et=True")
         et_candidates = [jnp.array(et, dtype=jnp.int32) for et in et_candidates]
 
+    def _build_ph1_blocked_states_step(global_full):
+        if ph1_penalty_slots <= 1:
+            if ph1_forced_tilde_state is None:
+                tilde = jnp.full(global_full.shape, -1.0, dtype=jnp.float32)
+            else:
+                forced = ph1_forced_tilde_state.astype(jnp.float32)
+                if forced.ndim == global_full.ndim + 1:
+                    forced = forced[0]
+                tilde = forced
+        else:
+            tilde_slots = jnp.full(
+                (ph1_penalty_slots,) + global_full.shape,
+                -1.0,
+                dtype=jnp.float32,
+            )
+            if ph1_forced_tilde_state is not None:
+                forced = ph1_forced_tilde_state.astype(jnp.float32)
+                if forced.ndim == global_full.ndim + 1:
+                    use_slots = min(ph1_penalty_slots, int(forced.shape[0]))
+                    tilde_slots = tilde_slots.at[:use_slots].set(forced[:use_slots])
+                else:
+                    tilde_slots = tilde_slots.at[0].set(forced)
+            tilde = tilde_slots
+        return {f"agent_{i}": tilde for i in range(env.num_agents)}
+
+    def _compute_ph1_eval_step_stats(next_state, extras, blocked_states_step):
+        step_penalty_env = jnp.float32(0.0)
+        step_dist_env = jnp.float32(0.0)
+        policy0_uses_blocked = True
+        if hasattr(policies[0], "config") and isinstance(getattr(policies[0], "config"), dict):
+            policy0_uses_blocked = bool(
+                policies[0].config.get("LEARNER_USE_BLOCKED_INPUT", True)
+            )
+
+        if (
+            ph1_enabled
+            and policy0_uses_blocked
+            and blocked_states_step is not None
+            and hasattr(policies[0], "network")
+            and hasattr(policies[0], "params")
+        ):
+            policy0 = policies[0]
+            global_full_next = env.get_obs_default(next_state)[0].astype(jnp.float32)
+            global_full_next_actor = jnp.stack(
+                [global_full_next for _ in range(env.num_agents)], axis=0
+            )
+            z_next = _encode_policy_metric_emb(policy0, global_full_next_actor)
+
+            blocked_actor = jnp.stack(
+                [blocked_states_step[f"agent_{i}"] for i in range(env.num_agents)],
+                axis=0,
+            )
+            if blocked_actor.ndim == 4:
+                blocked_actor = blocked_actor[:, None, ...]
+            num_slots = int(blocked_actor.shape[1])
+            flat_blocks = blocked_actor.reshape(blocked_actor.shape[0], num_slots, -1)
+            valid_slots = ~jnp.all(flat_blocks == -1.0, axis=-1)
+
+            blocked_emb_slots = jnp.stack(
+                [
+                    _get_blocked_metric_slots_from_extras(
+                        extras[f"agent_{i}"],
+                        jnp.zeros_like(z_next[i]),
+                    )[:num_slots]
+                    for i in range(env.num_agents)
+                ],
+                axis=0,
+            )
+            if blocked_emb_slots.shape[1] == 1 and num_slots > 1:
+                blocked_emb_slots = jnp.tile(blocked_emb_slots, (1, num_slots, 1))
+            blocked_emb_slots = blocked_emb_slots[:, :num_slots, :]
+
+            z_next_slots = z_next[:, None, :]
+            lat_dist_slots = jnp.sqrt(
+                jnp.sum((z_next_slots - blocked_emb_slots) ** 2, axis=-1)
+            )
+            lat_dist_slots = jnp.where(valid_slots, lat_dist_slots, 0.0)
+            penalty_slots = ph1_omega * jnp.exp(-ph1_sigma * lat_dist_slots)
+            penalty_slots = jnp.where(valid_slots, penalty_slots, 0.0)
+
+            step_penalty_env = jnp.sum(penalty_slots, axis=-1).mean()
+            step_dist_env = jnp.sum(lat_dist_slots, axis=-1).mean()
+
+        return step_penalty_env, step_dist_env
+
     def _perform_step(carry, key):
         (
             obs,
@@ -237,19 +331,12 @@ def get_rollout(
             kwargs["blocked_states"] = blocked_states
 
         obs_for_policy = obs
+        blocked_states_step = None
         if ph1_enabled:
             # PH1 policy execution now uses each agent's observation (no full-obs override).
             # Only `blocked_states` should carry the global full target (tilde{s}).
             global_full = env.get_obs_default(state)[0].astype(jnp.float32)  # (H, W, C_full)
-            if ph1_forced_tilde_state is None:
-                blocked_states_step = {
-                    f"agent_{i}": jnp.full(global_full.shape, -1.0, dtype=jnp.float32)
-                    for i in range(env.num_agents)
-                }
-            else:
-                blocked_states_step = {
-                    f"agent_{i}": ph1_forced_tilde_state for i in range(env.num_agents)
-                }
+            blocked_states_step = _build_ph1_blocked_states_step(global_full)
             kwargs["blocked_states"] = blocked_states_step
 
         actions, next_hstate, extras = _get_actions(obs_for_policy, done, hstate, key_sample, **kwargs)
@@ -326,45 +413,11 @@ def get_rollout(
                     )
 
         # PH1 evaluation-time penalty reconstruction
-        step_penalty_env = jnp.float32(0.0)
-        step_dist_env = jnp.float32(0.0)
-        policy0_uses_blocked = True
-        if hasattr(policies[0], "config") and isinstance(getattr(policies[0], "config"), dict):
-            policy0_uses_blocked = bool(
-                policies[0].config.get("LEARNER_USE_BLOCKED_INPUT", True)
-            )
-        if (
-            ph1_enabled
-            and policy0_uses_blocked
-            and hasattr(policies[0], "network")
-            and hasattr(policies[0], "params")
-        ):
-            policy0 = policies[0]
-            global_full_next = env.get_obs_default(next_state)[0].astype(jnp.float32)
-            global_full_next_actor = jnp.stack([global_full_next for _ in range(env.num_agents)], axis=0)
-
-            z_next = _encode_policy_metric_emb(policy0, global_full_next_actor)
-
-            blocked_emb = jnp.stack(
-                [
-                    _get_blocked_metric_from_extras(
-                        extras[f"agent_{i}"],
-                        jnp.zeros_like(z_next[i]),
-                    )
-                    for i in range(env.num_agents)
-                ],
-                axis=0,
-            )
-
-            lat_dist = jnp.sqrt(jnp.sum((z_next - blocked_emb) ** 2, axis=-1))
-            penalty = ph1_omega * jnp.exp(-ph1_sigma * lat_dist)
-
-            # normal tilde{s} (-1)인 경우 penalty=0
-            if ph1_forced_tilde_state is None:
-                penalty = jnp.zeros_like(penalty)
-
-            step_penalty_env = penalty.mean()
-            step_dist_env = lat_dist.mean()
+        step_penalty_env, step_dist_env = _compute_ph1_eval_step_stats(
+            next_state,
+            extras,
+            blocked_states_step,
+        )
 
         new_total_reward = total_reward + reward["agent_0"]
         penalized_total_reward = penalized_total_reward + (reward["agent_0"] - step_penalty_env)
@@ -443,17 +496,10 @@ def get_rollout(
             kwargs["blocked_states"] = blocked_states
 
         obs_for_policy = obs
+        blocked_states_step = None
         if ph1_enabled:
             global_full = env.get_obs_default(state)[0].astype(jnp.float32)  # (H, W, C_full)
-            if ph1_forced_tilde_state is None:
-                blocked_states_step = {
-                    f"agent_{i}": jnp.full(global_full.shape, -1.0, dtype=jnp.float32)
-                    for i in range(env.num_agents)
-                }
-            else:
-                blocked_states_step = {
-                    f"agent_{i}": ph1_forced_tilde_state for i in range(env.num_agents)
-                }
+            blocked_states_step = _build_ph1_blocked_states_step(global_full)
             kwargs["blocked_states"] = blocked_states_step
 
         actions, next_hstate, extras = _get_actions(obs_for_policy, done, hstate, key_sample, **kwargs)
@@ -530,32 +576,11 @@ def get_rollout(
                     )
 
         # PH1 evaluation-time penalty reconstruction
-        step_penalty_env = jnp.float32(0.0)
-        step_dist_env = jnp.float32(0.0)
-        if ph1_enabled and hasattr(policies[0], "network") and hasattr(policies[0], "params"):
-            policy0 = policies[0]
-            global_full_next = env.get_obs_default(next_state)[0].astype(jnp.float32)
-            global_full_next_actor = jnp.stack([global_full_next for _ in range(env.num_agents)], axis=0)
-
-            z_next = _encode_policy_metric_emb(policy0, global_full_next_actor)
-
-            blocked_emb = jnp.stack(
-                [
-                    _get_blocked_metric_from_extras(
-                        extras[f"agent_{i}"],
-                        jnp.zeros_like(z_next[i]),
-                    )
-                    for i in range(env.num_agents)
-                ],
-                axis=0,
-            )
-
-            lat_dist = jnp.sqrt(jnp.sum((z_next - blocked_emb) ** 2, axis=-1))
-            penalty = ph1_omega * jnp.exp(-ph1_sigma * lat_dist)
-            if ph1_forced_tilde_state is None:
-                penalty = jnp.zeros_like(penalty)
-            step_penalty_env = penalty.mean()
-            step_dist_env = lat_dist.mean()
+        step_penalty_env, step_dist_env = _compute_ph1_eval_step_stats(
+            next_state,
+            extras,
+            blocked_states_step,
+        )
 
         new_total_reward = total_reward + reward["agent_0"]
         penalized_total_reward = penalized_total_reward + (reward["agent_0"] - step_penalty_env)

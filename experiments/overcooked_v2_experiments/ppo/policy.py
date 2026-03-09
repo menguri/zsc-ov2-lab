@@ -59,24 +59,12 @@ class PPOPolicy(AbstractPolicy):
         if "alg" in self.config:
             alg_name = self.config["alg"].get("ALG_NAME", alg_name)
         
-        # Check for STL (anchor)
-        is_anchor = False
-        if "anchor" in self.config:
-            is_anchor = self.config["anchor"]
-        elif "alg" in self.config and "anchor" in self.config["alg"]:
-            is_anchor = self.config["alg"]["anchor"]
-        elif "model" in self.config and "anchor" in self.config["model"]:
-            is_anchor = self.config["model"]["anchor"]
-            
-        if alg_name == "E3T" and is_anchor:
-            alg_name = "STL"
-            
-        # E3T/STL Logic
+        # E3T Logic
         obs_hist_in = None
         act_hist_in = None
         partner_prediction = None
 
-        if obs_history is not None and alg_name in ["E3T", "STL"]:
+        if obs_history is not None and alg_name == "E3T":
             # obs_history: (k, H, W, C) -> (1, k, H, W, C) (Batch 추가)
             # with_batching=True이면 이미 (Batch, k, H, W, C)이므로 추가 안 함
             if not self.with_batching:

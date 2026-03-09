@@ -36,7 +36,6 @@ def _ph_param_suffix(config) -> str:
     """Add PH1/PH2 run-name params for easier run tracking.
 
     Included fields:
-    - contrastive on/off (ct0/ct1)
     - PH1_EPSILON
     - PH1_OMEGA
     - PH1_SIGMA
@@ -45,12 +44,11 @@ def _ph_param_suffix(config) -> str:
     if ("PH1" not in alg_name) and ("PH2" not in alg_name):
         return ""
 
-    contrastive = _as_bool(config.get("PH1_CONTRASTIVE_ENABLED", False), default=False)
     eps = _float_to_slug(config.get("PH1_EPSILON", None))
     omega = _float_to_slug(config.get("PH1_OMEGA", None))
     sigma = _float_to_slug(config.get("PH1_SIGMA", None))
 
-    return f"_ct{1 if contrastive else 0}_e{eps}_o{omega}_s{sigma}"
+    return f"_e{eps}_o{omega}_s{sigma}"
 
 
 def _infer_run_suffix(config) -> str:

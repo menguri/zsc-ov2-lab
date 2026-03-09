@@ -198,12 +198,12 @@ class PPOPolicy(AbstractPolicy):
                     extras["blocked_emb"] = blocked_emb[0]
                 else:
                     extras["blocked_emb"] = blocked_emb[0, 0]
-            blocked_metric_emb = net_extras.get("blocked_metric_emb", None)
-            if blocked_metric_emb is not None:
+            blocked_emb_slots = net_extras.get("blocked_emb_slots", None)
+            if blocked_emb_slots is not None:
                 if self.with_batching:
-                    extras["blocked_metric_emb"] = blocked_metric_emb[0]
+                    extras["blocked_emb_slots"] = blocked_emb_slots[0]
                 else:
-                    extras["blocked_metric_emb"] = blocked_metric_emb[0, 0]
+                    extras["blocked_emb_slots"] = blocked_emb_slots[0, 0]
 
         return action, next_hstate, extras
 

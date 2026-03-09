@@ -33,6 +33,7 @@ from overcooked_v2_experiments.ppo.utils.stablock import (
 from overcooked_v2_experiments.ppo.ph1_utils import (
     compute_ph1_probs,
     sample_target_idx,
+    sample_multi_targets_from_pool,
 )
 from overcooked_v2_experiments.eval.policy import AbstractPolicy
 from overcooked_v2_experiments.ppo.models.abstract import ActorCriticBase
@@ -102,6 +103,16 @@ def make_train(
         else float(np.clip(ph1_epsilon, 0.0, 1.0))
     )
     ph1_pool_size = int(config.get("PH1_POOL_SIZE", 100))
+    ph1_multi_penalty_enabled = bool(config.get("PH1_MULTI_PENALTY_ENABLED", False))
+    ph1_max_penalty_count = int(config.get("PH1_MAX_PENALTY_COUNT", 1))
+    ph1_max_penalty_count = max(1, ph1_max_penalty_count)
+    ph1_penalty_slots = ph1_max_penalty_count if ph1_multi_penalty_enabled else 1
+    ph1_multi_penalty_single_weight = float(
+        config.get("PH1_MULTI_PENALTY_SINGLE_WEIGHT", 2.0)
+    )
+    ph1_multi_penalty_other_weight = float(
+        config.get("PH1_MULTI_PENALTY_OTHER_WEIGHT", 1.0)
+    )
     ph1_warmup_steps = int(config.get("PH1_WARMUP_STEPS", 0))
     ph1_beta_base = float(config.get("PH1_BETA", 1.0))
     ph1_beta_schedule_enabled = bool(config.get("PH1_BETA_SCHEDULE_ENABLED", False))
@@ -111,18 +122,6 @@ def make_train(
         config.get("PH1_BETA_SCHEDULE_HORIZON_ENV_STEPS", -1)
     )
     ph1_eval_enabled = bool(config.get("PH1_EVAL_ENABLED", False)) and ph1_enabled
-    ph1_contrastive_enabled = bool(config.get("PH1_CONTRASTIVE_ENABLED", False))
-    ph1_contrastive_coef = float(config.get("PH1_CONTRASTIVE_COEF", 0.05))
-    ph1_contrastive_temp = float(config.get("PH1_CONTRASTIVE_TEMP", 0.1))
-    ph1_contrastive_entry_dropout = float(
-        config.get("PH1_CONTRASTIVE_ENTRY_DROPOUT", 0.05)
-    )
-    ph1_contrastive_multi_pos = bool(
-        config.get("PH1_CONTRASTIVE_MULTI_POS", True)
-    )
-    ph1_contrastive_denom_train_mask = bool(
-        config.get("PH1_CONTRASTIVE_DENOM_TRAIN_MASK", True)
-    )
     abort_on_nan = bool(config.get("ABORT_ON_NAN", True))
 
     # E3T 설정 로드
@@ -440,7 +439,14 @@ def make_train(
                 dummy_blocked_states = jnp.zeros((1, model_config["NUM_ENVS"], 2), dtype=jnp.int32)
             elif config.get("PH1_ENABLED", False):
                 # PH1 always uses global full state as blocked target
-                init_shape = (1, model_config["NUM_ENVS"]) + ph1_block_shape
+                if ph1_multi_penalty_enabled:
+                    init_shape = (
+                        1,
+                        model_config["NUM_ENVS"],
+                        ph1_penalty_slots,
+                    ) + ph1_block_shape
+                else:
+                    init_shape = (1, model_config["NUM_ENVS"]) + ph1_block_shape
                 dummy_blocked_states = jnp.zeros(init_shape, dtype=jnp.float32)
 
         # Single Init: Initialize all parameters at once to avoid collision
@@ -629,25 +635,59 @@ def make_train(
                     current_global_step = update_step * model_config["NUM_STEPS"] * model_config["NUM_ENVS"]
                     is_ph1_warmup = current_global_step < ph1_warmup_steps
 
-                    def _sample_target(r, probs_env):
-                        # If warmup or pool not ready, force normal (index = pool_size)
-                        return jax.lax.cond(
-                            is_ph1_warmup | (~ph1_pool_ready),
-                            lambda _: jnp.int32(pool_size),
-                            lambda _: sample_target_idx(r, probs_env),
-                            operand=None,
+                    if ph1_multi_penalty_enabled:
+
+                        def _sample_multi_target(r, pool_env, probs_env):
+                            none_targets = jnp.full(
+                                (ph1_penalty_slots,) + pool_env.shape[1:],
+                                -1,
+                                dtype=pool_env.dtype,
+                            )
+
+                            def _do_sample(_):
+                                targets, _mask, _count = sample_multi_targets_from_pool(
+                                    r,
+                                    pool_env,
+                                    probs_env,
+                                    max_penalty_count=ph1_penalty_slots,
+                                    single_weight=ph1_multi_penalty_single_weight,
+                                    other_weight=ph1_multi_penalty_other_weight,
+                                )
+                                return targets
+
+                            return jax.lax.cond(
+                                is_ph1_warmup | (~ph1_pool_ready),
+                                lambda _: none_targets,
+                                _do_sample,
+                                operand=None,
+                            )
+
+                        new_targets = jax.vmap(_sample_multi_target)(
+                            rng_envs, ph1_pool_states, ph1_probs
                         )
+                    else:
 
-                    target_idxs = jax.vmap(_sample_target)(rng_envs, ph1_probs)
+                        def _sample_target(r, probs_env):
+                            # If warmup or pool not ready, force normal (index = pool_size)
+                            return jax.lax.cond(
+                                is_ph1_warmup | (~ph1_pool_ready),
+                                lambda _: jnp.int32(pool_size),
+                                lambda _: sample_target_idx(r, probs_env),
+                                operand=None,
+                            )
 
-                    def _pick_candidate(idx, pool_env):
-                        is_none = (idx == pool_size)
-                        safe_idx = jnp.clip(idx, 0, pool_size - 1)
-                        cand = pool_env[safe_idx]
-                        none_val = jnp.full_like(cand, -1)
-                        return jax.lax.select(is_none, none_val, cand)
+                        target_idxs = jax.vmap(_sample_target)(rng_envs, ph1_probs)
 
-                    new_targets = jax.vmap(_pick_candidate)(target_idxs, ph1_pool_states)
+                        def _pick_candidate(idx, pool_env):
+                            is_none = (idx == pool_size)
+                            safe_idx = jnp.clip(idx, 0, pool_size - 1)
+                            cand = pool_env[safe_idx]
+                            none_val = jnp.full_like(cand, -1)
+                            return jax.lax.select(is_none, none_val, cand)
+
+                        new_targets = jax.vmap(_pick_candidate)(
+                            target_idxs, ph1_pool_states
+                        )
 
                     # done인 환경만 업데이트
                     # blocked_states_env shape: (Envs, ...)
@@ -1116,7 +1156,7 @@ def make_train(
                 # Calculate Distance: || z(next_obs) - z(blocked) ||
                 # We need z(next_obs). We can run the network encoder on 'obsv' (next observation).
                 
-                dist_penalty = 0.0
+                dist_penalty = jnp.zeros((model_config["NUM_ACTORS"],), dtype=jnp.float32)
                 if (
                     ph1_enabled
                     and (global_full_next_env0 is not None)
@@ -1129,53 +1169,89 @@ def make_train(
                         [global_full_next_env0, global_full_next_env0], axis=0
                     )  # (Actors, H, W, C_full)
 
-                    metric_method = (
-                        network.encode_blocked_metric
-                        if (
-                            ph1_contrastive_enabled
-                            and hasattr(network, "encode_blocked_metric")
-                        )
-                        else network.encode_blocked
-                    )
                     z_next = network.apply(
                         train_state.params,
                         global_full_next_actor,
-                        method=metric_method,
+                        method=network.encode_blocked,
                     ).squeeze()  # (Actors, D or D_proj)
-                    z_tilde_src = ph1_extras.get("blocked_metric_emb", None)
-                    if z_tilde_src is None:
+                    z_tilde_slots_src = ph1_extras.get("blocked_emb_slots", None)
+                    if z_tilde_slots_src is not None:
+                        z_tilde_slots = (
+                            z_tilde_slots_src[0]
+                            if z_tilde_slots_src.ndim >= 4
+                            else z_tilde_slots_src
+                        )
+                        if z_tilde_slots.ndim == 2:
+                            z_tilde_slots = z_tilde_slots[:, None, :]
+                    else:
                         z_tilde_src = ph1_extras["blocked_emb"]
-                    z_tilde = z_tilde_src.squeeze()  # (Actors, D or D_proj)
+                        z_tilde = (
+                            z_tilde_src[0] if z_tilde_src.ndim >= 3 else z_tilde_src
+                        )
+                        if z_tilde.ndim == 1:
+                            z_tilde = z_tilde[None, :]
+                        z_tilde_slots = z_tilde[:, None, :]
 
-                    lat_dist = jnp.sqrt(jnp.sum((z_next - z_tilde) ** 2, axis=-1))
+                    num_slots = z_tilde_slots.shape[1]
+                    z_next_slots = jnp.expand_dims(z_next, axis=1)
+                    lat_dist_slots = jnp.sqrt(
+                        jnp.sum((z_next_slots - z_tilde_slots) ** 2, axis=-1)
+                    )
+                    if blocked_states_actor is not None:
+                        if blocked_states_actor.ndim >= 5:
+                            flat_blocks = blocked_states_actor.reshape(
+                                blocked_states_actor.shape[0],
+                                blocked_states_actor.shape[1],
+                                -1,
+                            )
+                            valid_slots = ~jnp.all(flat_blocks == -1, axis=-1)
+                        else:
+                            flat_blocks = blocked_states_actor.reshape(
+                                blocked_states_actor.shape[0], -1
+                            )
+                            valid_slots = ~jnp.all(flat_blocks == -1, axis=-1)
+                            valid_slots = valid_slots[:, None]
+                    else:
+                        valid_slots = jnp.ones(
+                            (model_config["NUM_ACTORS"], num_slots),
+                            dtype=jnp.bool_,
+                        )
+                    if valid_slots.shape[1] == 1 and num_slots > 1:
+                        valid_slots = jnp.tile(valid_slots, (1, num_slots))
+                    valid_slots = valid_slots[:, :num_slots]
+                    lat_dist_slots = jnp.where(valid_slots, lat_dist_slots, 0.0)
 
                     ph1_omega = config.get("PH1_OMEGA", 1.0)
                     ph1_sigma = config.get("PH1_SIGMA", 1.0)
-                    dist_penalty = ph1_omega * jnp.exp(-ph1_sigma * lat_dist)
+                    penalty_slots = ph1_omega * jnp.exp(-ph1_sigma * lat_dist_slots)
+                    penalty_slots = jnp.where(valid_slots, penalty_slots, 0.0)
 
                     # [Warmup] Disable penalty if warming up
                     current_global_step = update_step * model_config["NUM_STEPS"] * model_config["NUM_ENVS"]
                     is_ph1_warmup = current_global_step < ph1_warmup_steps
-                    dist_penalty = jnp.where(is_ph1_warmup, 0.0, dist_penalty)
-
-                    # Mask Penalty for Normal Targets (-1 filled)
-                    if blocked_states_actor is not None:
-                        flat_blocks = blocked_states_actor.reshape(blocked_states_actor.shape[0], -1)
-                        is_normal = jnp.all(flat_blocks == -1, axis=-1)
-                        lat_dist = jnp.where(is_normal, 0.0, lat_dist)
-                        dist_penalty = jnp.where(is_normal, 0.0, dist_penalty)
+                    penalty_slots = jnp.where(is_ph1_warmup, 0.0, penalty_slots)
+                    dist_penalty = jnp.sum(penalty_slots, axis=-1)
+                    lat_dist = jnp.sum(lat_dist_slots, axis=-1)
 
                     # Shared reward penalty (env-level mean)
                     dist_penalty_env = dist_penalty.reshape(
                         env.num_agents, model_config["NUM_ENVS"]
                     ).mean(axis=0)
                     lat_dist_env = lat_dist.reshape(
-                                env.num_agents, model_config["NUM_ENVS"]
-                            ).mean(axis=0)
+                        env.num_agents, model_config["NUM_ENVS"]
+                    ).mean(axis=0)
+                    dist_penalty_env_slots = penalty_slots.reshape(
+                        env.num_agents, model_config["NUM_ENVS"], num_slots
+                    ).mean(axis=0)
+                    lat_dist_env_slots = lat_dist_slots.reshape(
+                        env.num_agents, model_config["NUM_ENVS"], num_slots
+                    ).mean(axis=0)
 
                     reward = {k: v - dist_penalty_env for k, v in reward.items()}
                     info["ph1_penalty_env"] = dist_penalty_env
                     info["ph1_dist_env"] = lat_dist_env
+                    info["ph1_penalty_env_slots"] = dist_penalty_env_slots
+                    info["ph1_dist_env_slots"] = lat_dist_env_slots
                 
                 # [Stablock] 차단 좌표 도달 시 큰 음의 보상 적용 (partner만 유효)
                 if stablock_enabled:
@@ -1300,12 +1376,23 @@ def make_train(
                 def _reshape_info_leaf(x):
                     if not hasattr(x, "shape"):
                         return x
+                    if (
+                        x.ndim >= 2
+                        and x.shape[0] == env.num_agents
+                        and x.shape[1] == model_config["NUM_ENVS"]
+                    ):
+                        return x.reshape((model_config["NUM_ACTORS"],) + x.shape[2:])
                     if x.shape == (model_config["NUM_ENVS"],):
                         x = jnp.tile(x, env.num_agents)
+                    elif x.ndim >= 2 and x.shape[0] == model_config["NUM_ENVS"]:
+                        x = jnp.tile(
+                            x,
+                            (env.num_agents,) + (1,) * (x.ndim - 1),
+                        )
                     if x.shape == ():
                         x = jnp.full((model_config["NUM_ACTORS"],), x)
-                    if x.size == model_config["NUM_ACTORS"]:
-                        return x.reshape((model_config["NUM_ACTORS"],))
+                    if x.ndim >= 1 and x.shape[0] == model_config["NUM_ACTORS"]:
+                        return x.reshape((model_config["NUM_ACTORS"],) + x.shape[1:])
                     return x
 
                 info = {
@@ -1586,11 +1673,6 @@ def make_train(
                         # --------------------------------------------------------------
                         pred_loss = 0.0
                         pred_accuracy = 0.0
-                        contrastive_loss = 0.0
-                        contrastive_pos_sim = 0.0
-                        contrastive_neg_sim = 0.0
-                        contrastive_anchor_frac = 0.0
-                        contrastive_pos_count_mean = 0.0
                         partner_prediction = None
                         
                         use_ph1 = config.get("PH1_ENABLED", False)
@@ -1662,168 +1744,6 @@ def make_train(
                              # But this means we skip prediction loss calculation? Yes, if logic falls here.
                             # But with my fix above, it should enter the block.
                              pass
-
-                        # --------------------------------------------------------------
-                        # PH1 Contrastive Loss on blocked metric embedding
-                        # PH2에서는 specialist(spec) 학습 스텝에서만 활성화한다.
-                        # --------------------------------------------------------------
-                        if (
-                            ph1_enabled
-                            and (ph2_role == "spec")
-                            and ph1_contrastive_enabled
-                            and (ph1_contrastive_coef > 0.0)
-                        ):
-                            blocked_states_metric = traj_batch.blocked_states.astype(jnp.float32)
-                            metric_method = (
-                                network.encode_blocked_metric
-                                if hasattr(network, "encode_blocked_metric")
-                                else network.encode_blocked
-                            )
-                            blocked_flat = blocked_states_metric.reshape(
-                                (blocked_states_metric.shape[0] * blocked_states_metric.shape[1], -1)
-                            )
-                            n = blocked_flat.shape[0]
-                            valid_tilde = ~jnp.all(blocked_flat == -1.0, axis=-1)
-
-                            if isinstance(train_mask, (bool, np.bool_)):
-                                train_mask_flat = jnp.full(
-                                    (n,),
-                                    bool(train_mask),
-                                    dtype=jnp.bool_,
-                                )
-                            else:
-                                train_mask_flat = jnp.asarray(train_mask).reshape(-1).astype(jnp.bool_)
-                                if train_mask_flat.shape[0] != n:
-                                    train_mask_flat = jnp.broadcast_to(train_mask_flat, (n,))
-                            candidate_mask = valid_tilde & train_mask_flat
-
-                            denom_col_mask = valid_tilde
-                            if ph1_contrastive_denom_train_mask:
-                                denom_col_mask = denom_col_mask & train_mask_flat
-
-                            same_tilde = jnp.all(
-                                blocked_flat[:, None, :] == blocked_flat[None, :, :],
-                                axis=-1,
-                            )
-                            eye = jnp.eye(n, dtype=jnp.bool_)
-                            if ph1_contrastive_multi_pos:
-                                pos_mask = (
-                                    same_tilde
-                                    & valid_tilde[:, None]
-                                    & denom_col_mask[None, :]
-                                )
-                            else:
-                                pos_mask = (
-                                    eye
-                                    & valid_tilde[:, None]
-                                    & denom_col_mask[None, :]
-                                )
-
-                            has_pos = jnp.any(pos_mask, axis=1)
-                            anchor_mask = candidate_mask & has_pos
-                            anchor_count = anchor_mask.astype(jnp.float32).sum()
-                            candidate_count = candidate_mask.astype(jnp.float32).sum()
-                            c_count = jnp.maximum(anchor_count, 1.0)
-                            contrastive_anchor_frac = jnp.where(
-                                candidate_count > 0.0,
-                                anchor_count / candidate_count,
-                                0.0,
-                            )
-
-                            entry_dropout = jnp.clip(
-                                jnp.asarray(ph1_contrastive_entry_dropout, dtype=jnp.float32),
-                                0.0,
-                                0.95,
-                            )
-                            keep_prob = 1.0 - entry_dropout
-                            rng_aug_1, rng_aug_2 = jax.random.split(loss_rng)
-                            keep_mask_1 = jax.random.bernoulli(
-                                rng_aug_1,
-                                p=keep_prob,
-                                shape=blocked_states_metric.shape,
-                            ).astype(blocked_states_metric.dtype)
-                            keep_mask_2 = jax.random.bernoulli(
-                                rng_aug_2,
-                                p=keep_prob,
-                                shape=blocked_states_metric.shape,
-                            ).astype(blocked_states_metric.dtype)
-                            blocked_view_1 = blocked_states_metric * keep_mask_1
-                            blocked_view_2 = blocked_states_metric * keep_mask_2
-
-                            z_view_1 = network.apply(
-                                params,
-                                blocked_view_1,
-                                method=metric_method,
-                            )
-                            z_view_2 = network.apply(
-                                params,
-                                blocked_view_2,
-                                method=metric_method,
-                            )
-                            z_flat_1 = z_view_1.reshape((-1, z_view_1.shape[-1]))
-                            z_flat_2 = z_view_2.reshape((-1, z_view_2.shape[-1]))
-                            z_flat_1 = z_flat_1 / jnp.maximum(
-                                jnp.linalg.norm(z_flat_1, axis=-1, keepdims=True), 1e-6
-                            )
-                            z_flat_2 = z_flat_2 / jnp.maximum(
-                                jnp.linalg.norm(z_flat_2, axis=-1, keepdims=True), 1e-6
-                            )
-
-                            sim = jnp.matmul(z_flat_1, z_flat_2.T)
-                            temp = jnp.maximum(
-                                jnp.asarray(ph1_contrastive_temp, dtype=jnp.float32),
-                                1e-6,
-                            )
-                            logits = sim / temp
-                            valid_denom = denom_col_mask[None, :]
-                            logits_masked = jnp.where(
-                                valid_denom,
-                                logits,
-                                jnp.full_like(logits, -1e9),
-                            )
-
-                            pos_logits_masked = jnp.where(
-                                pos_mask,
-                                logits,
-                                jnp.full_like(logits, -1e9),
-                            )
-                            pos_logit = jax.nn.logsumexp(pos_logits_masked, axis=1)
-                            log_denom = jax.nn.logsumexp(logits_masked, axis=1)
-                            c_loss_vec = -(pos_logit - log_denom)
-                            c_loss_vec = jnp.where(anchor_mask, c_loss_vec, 0.0)
-                            contrastive_loss = c_loss_vec.sum() / c_count
-
-                            pos_pair_mask = anchor_mask[:, None] & pos_mask
-                            pos_pair_count = jnp.maximum(
-                                pos_pair_mask.astype(jnp.float32).sum(),
-                                1.0,
-                            )
-                            contrastive_pos_sim = jnp.where(
-                                pos_pair_mask,
-                                sim,
-                                0.0,
-                            ).sum() / pos_pair_count
-                            pos_count_per_anchor = jnp.sum(
-                                pos_mask.astype(jnp.float32), axis=1
-                            )
-                            contrastive_pos_count_mean = jnp.where(
-                                anchor_count > 0.0,
-                                jnp.where(anchor_mask, pos_count_per_anchor, 0.0).sum()
-                                / anchor_count,
-                                0.0,
-                            )
-
-                            neg_mask = valid_denom & (~pos_mask)
-                            anchor_neg_mask = anchor_mask[:, None] & neg_mask
-                            neg_count = jnp.maximum(
-                                anchor_neg_mask.astype(jnp.float32).sum(),
-                                1.0,
-                            )
-                            contrastive_neg_sim = jnp.where(
-                                anchor_neg_mask,
-                                sim,
-                                0.0,
-                            ).sum() / neg_count
 
                         # RERUN NETWORK
                         # Actor-Critic 네트워크 재실행 (Value, Policy 계산)
@@ -1905,7 +1825,6 @@ def make_train(
                             + model_config["VF_COEF"] * value_loss
                             - model_config["ENT_COEF"] * entropy
                             + pred_loss
-                            + jnp.float32(ph1_contrastive_coef) * contrastive_loss
                         )
 
                         return total_loss, (
@@ -1915,11 +1834,6 @@ def make_train(
                             ratio,
                             pred_loss,
                             pred_accuracy,
-                            contrastive_loss,
-                            contrastive_pos_sim,
-                            contrastive_neg_sim,
-                            contrastive_anchor_frac,
-                            contrastive_pos_count_mean,
                         )
 
                     def _perform_update():
@@ -1947,7 +1861,7 @@ def make_train(
                         # jax.debug.print("No update")
                         return (train_state, mb_rng), (
                             0.0,
-                            (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                            (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
                         )
 
                     # jax.debug.print(
@@ -2066,6 +1980,16 @@ def make_train(
                     metric["ph1_penalty_env_mean"] = metric["ph1_penalty_env"].mean()
                 if "ph1_dist_env" in metric:
                     metric["ph1_dist_env_mean"] = metric["ph1_dist_env"].mean()
+                if "ph1_penalty_env_slots" in metric:
+                    for slot_idx in range(ph1_penalty_slots):
+                        metric[f"ph1_penalty_env_slot{slot_idx + 1}_mean"] = (
+                            metric["ph1_penalty_env_slots"][..., slot_idx].mean()
+                        )
+                if "ph1_dist_env_slots" in metric:
+                    for slot_idx in range(ph1_penalty_slots):
+                        metric[f"ph1_dist_env_slot{slot_idx + 1}_mean"] = (
+                            metric["ph1_dist_env_slots"][..., slot_idx].mean()
+                        )
 
                 rew0, rew1 = _get_agent_means("combined_reward")
                 metric["reward_agent0_penalized"] = rew0
@@ -2091,11 +2015,6 @@ def make_train(
                 ratio,
                 pred_loss,
                 pred_accuracy,
-                contrastive_loss,
-                contrastive_pos_sim,
-                contrastive_neg_sim,
-                contrastive_anchor_frac,
-                contrastive_pos_count_mean,
             ) = aux_data
 
             # PPO 학습 손실 메트릭 추가
@@ -2106,11 +2025,6 @@ def make_train(
             metric["ratio"] = ratio                # PPO ratio (new_prob / old_prob)
             metric["pred_loss"] = pred_loss        # 파트너 행동 예측 손실
             metric["pred_accuracy"] = pred_accuracy # 파트너 행동 예측 정확도
-            metric["contrastive_loss"] = contrastive_loss
-            metric["contrastive_pos_sim"] = contrastive_pos_sim
-            metric["contrastive_neg_sim"] = contrastive_neg_sim
-            metric["contrastive_anchor_frac"] = contrastive_anchor_frac
-            metric["contrastive_pos_count_mean"] = contrastive_pos_count_mean
             metric["ph1_beta_current"] = ph1_beta_current
             metric["ph1_beta_progress"] = ph1_beta_progress
 
@@ -2139,6 +2053,17 @@ def make_train(
                     mask_arr = mask_arr[..., None]
                 denom = jnp.maximum(jnp.sum(mask_arr), 1.0)
                 return jnp.sum(x_arr * mask_arr) / denom
+
+            def _masked_mean_with_mask_slots(x, mask):
+                x_arr = jnp.asarray(x, dtype=jnp.float32)
+                if x_arr.ndim < 3:
+                    return x_arr
+                mask_arr = jnp.asarray(mask, dtype=jnp.float32)
+                while mask_arr.ndim < x_arr.ndim:
+                    mask_arr = mask_arr[..., None]
+                num = jnp.sum(x_arr * mask_arr, axis=(0, 1))
+                denom = jnp.maximum(jnp.sum(mask_arr, axis=(0, 1)), 1.0)
+                return num / denom
 
             if "combined_reward" in metric:
                 metric["reward"] = _masked_mean_with_train_mask(metric["combined_reward"])
@@ -2171,6 +2096,18 @@ def make_train(
                     metric["distance"] = _masked_mean_with_mask(
                         metric["ph1_dist_env"], spec_ind_mask
                     )
+                if "ph1_penalty_env_slots" in metric:
+                    slot_penalty = _masked_mean_with_mask_slots(
+                        metric["ph1_penalty_env_slots"], spec_ind_mask
+                    )
+                    for slot_idx in range(ph1_penalty_slots):
+                        metric[f"penalty_slot{slot_idx + 1}"] = slot_penalty[slot_idx]
+                if "ph1_dist_env_slots" in metric:
+                    slot_distance = _masked_mean_with_mask_slots(
+                        metric["ph1_dist_env_slots"], spec_ind_mask
+                    )
+                    for slot_idx in range(ph1_penalty_slots):
+                        metric[f"distance_slot{slot_idx + 1}"] = slot_distance[slot_idx]
 
             # 모든 메트릭 값을 배치/스텝 차원에 대해 평균 계산 (스칼라로 축약)
             # 이미 스칼라인 경우(PH1 메트릭 등)는 그대로 둔다.
@@ -2356,6 +2293,9 @@ def make_train(
                     ph1_prob_apply_fn = population.network.apply
                     ph1_prob_params = population.params
                     ph1_prob_use_blocked_input = population_use_blocked_input
+                ph1_prob_blocked_slots = (
+                    ph1_penalty_slots if ph1_prob_use_blocked_input else 1
+                )
 
                 # Use the most recent rollout step as the reference batch per environment.
                 # Shape conventions:
@@ -2393,6 +2333,7 @@ def make_train(
                         pp_env,
                         use_partner_pred=use_partner_pred,
                         use_blocked_input=ph1_prob_use_blocked_input,
+                        blocked_input_slots=ph1_prob_blocked_slots,
                         beta=ph1_beta_current,
                         normal_prob=config.get("PH1_NORMAL_PROB", 0.5),
                     )
@@ -2488,7 +2429,13 @@ def make_train(
             partner_pos = jnp.stack([partner_y, partner_x], axis=-1)
             if ph1_enabled:
                 # PH1 blocked target is always the global full state.
-                init_shape = (model_config["NUM_ENVS"],) + ph1_block_shape
+                if ph1_multi_penalty_enabled:
+                    init_shape = (
+                        model_config["NUM_ENVS"],
+                        ph1_penalty_slots,
+                    ) + ph1_block_shape
+                else:
+                    init_shape = (model_config["NUM_ENVS"],) + ph1_block_shape
                 initial_blocked_states_env = jnp.full(init_shape, -1.0, dtype=jnp.float32)
             else:
                 initial_blocked_states_env = initialize_blocked_states(

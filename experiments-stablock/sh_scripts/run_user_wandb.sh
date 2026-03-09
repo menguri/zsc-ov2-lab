@@ -51,6 +51,10 @@ set -euo pipefail
 : "${PH1_DISTANCE_THRESHOLD:=}"
 : "${PH1_POOL_SIZE:=}"
 : "${PH1_NORMAL_PROB:=}"
+: "${PH1_MULTI_PENALTY_ENABLED:=}"
+: "${PH1_MAX_PENALTY_COUNT:=}"
+: "${PH1_MULTI_PENALTY_SINGLE_WEIGHT:=}"
+: "${PH1_MULTI_PENALTY_OTHER_WEIGHT:=}"
 : "${PH1_EVAL_EVERY_ENV_STEPS:=}"
 : "${PH1_EVAL_VIDEO_EVERY_ENV_STEPS:=}"
 : "${PH1_EVAL_DEFER_VIDEO:=}"
@@ -60,13 +64,6 @@ set -euo pipefail
 : "${PH1_EVAL_OFFLINE_ONLY:=True}"
 : "${PH1_EVAL_VIZ_EPISODES:=}"
 : "${PH1_EVAL_NUM_SEEDS:=}"
-: "${PH1_CONTRASTIVE_ENABLED:=}"
-: "${PH1_CONTRASTIVE_COEF:=}"
-: "${PH1_CONTRASTIVE_TEMP:=}"
-: "${PH1_CONTRASTIVE_PROJ_DIM:=}"
-: "${PH1_CONTRASTIVE_ENTRY_DROPOUT:=}"
-: "${PH1_CONTRASTIVE_MULTI_POS:=}"
-: "${PH1_CONTRASTIVE_DENOM_TRAIN_MASK:=}"
 
 : "${PH1_POP_DIR:=}"
 : "${PH1_POP_NAME:=}"
@@ -241,6 +238,10 @@ while [[ $# -gt 0 ]]; do
     --ph1-dist)       PH1_DISTANCE_THRESHOLD="$2"; shift 2;;
     --ph1-pool-size)  PH1_POOL_SIZE="$2"; shift 2;;
     --ph1-normal-prob) PH1_NORMAL_PROB="$2"; shift 2;;
+    --ph1-multi-penalty-enabled) PH1_MULTI_PENALTY_ENABLED="$2"; shift 2;;
+    --ph1-max-penalty-count) PH1_MAX_PENALTY_COUNT="$2"; shift 2;;
+    --ph1-multi-penalty-single-weight) PH1_MULTI_PENALTY_SINGLE_WEIGHT="$2"; shift 2;;
+    --ph1-multi-penalty-other-weight) PH1_MULTI_PENALTY_OTHER_WEIGHT="$2"; shift 2;;
     --ph1-eval-every-env-steps) PH1_EVAL_EVERY_ENV_STEPS="$2"; shift 2;;
     --ph1-eval-video-every-env-steps) PH1_EVAL_VIDEO_EVERY_ENV_STEPS="$2"; shift 2;;
     --ph1-eval-log-video) PH1_EVAL_LOG_VIDEO="$2"; shift 2;;
@@ -253,13 +254,6 @@ while [[ $# -gt 0 ]]; do
     --ph1-enabled)    PH1_ENABLED="$2"; shift 2;;
     --ph1-epsilon)    PH1_EPSILON="$2"; shift 2;;
     --ph1-warmup-steps) PH1_WARMUP_STEPS="$2"; shift 2;;
-    --ph1-contrastive-enabled) PH1_CONTRASTIVE_ENABLED="$2"; shift 2;;
-    --ph1-contrastive-coef) PH1_CONTRASTIVE_COEF="$2"; shift 2;;
-    --ph1-contrastive-temp) PH1_CONTRASTIVE_TEMP="$2"; shift 2;;
-    --ph1-contrastive-proj-dim) PH1_CONTRASTIVE_PROJ_DIM="$2"; shift 2;;
-    --ph1-contrastive-entry-dropout) PH1_CONTRASTIVE_ENTRY_DROPOUT="$2"; shift 2;;
-    --ph1-contrastive-multi-pos) PH1_CONTRASTIVE_MULTI_POS="$2"; shift 2;;
-    --ph1-contrastive-denom-train-mask) PH1_CONTRASTIVE_DENOM_TRAIN_MASK="$2"; shift 2;;
     --ph1-pop-dir)    PH1_POP_DIR="$2"; shift 2;;
     --ph1-pop-name)   PH1_POP_NAME="$2"; shift 2;;
     --ph2-ratio-stage1) PH2_RATIO_STAGE1="$2"; shift 2;;
@@ -518,6 +512,18 @@ fi
 if [[ -n "$PH1_NORMAL_PROB" ]]; then
   PY_ARGS+=("PH1_NORMAL_PROB=$PH1_NORMAL_PROB")
 fi
+if [[ -n "$PH1_MULTI_PENALTY_ENABLED" ]]; then
+  PY_ARGS+=("PH1_MULTI_PENALTY_ENABLED=$PH1_MULTI_PENALTY_ENABLED")
+fi
+if [[ -n "$PH1_MAX_PENALTY_COUNT" ]]; then
+  PY_ARGS+=("PH1_MAX_PENALTY_COUNT=$PH1_MAX_PENALTY_COUNT")
+fi
+if [[ -n "$PH1_MULTI_PENALTY_SINGLE_WEIGHT" ]]; then
+  PY_ARGS+=("PH1_MULTI_PENALTY_SINGLE_WEIGHT=$PH1_MULTI_PENALTY_SINGLE_WEIGHT")
+fi
+if [[ -n "$PH1_MULTI_PENALTY_OTHER_WEIGHT" ]]; then
+  PY_ARGS+=("PH1_MULTI_PENALTY_OTHER_WEIGHT=$PH1_MULTI_PENALTY_OTHER_WEIGHT")
+fi
 if [[ -n "$PH1_EVAL_EVERY_ENV_STEPS" ]]; then
   PY_ARGS+=("PH1_EVAL_EVERY_ENV_STEPS=$PH1_EVAL_EVERY_ENV_STEPS")
 fi
@@ -553,27 +559,6 @@ if [[ -n "$PH1_EPSILON" ]]; then
 fi
 if [[ -n "$PH1_WARMUP_STEPS" ]]; then
   PY_ARGS+=("PH1_WARMUP_STEPS=$PH1_WARMUP_STEPS")
-fi
-if [[ -n "$PH1_CONTRASTIVE_ENABLED" ]]; then
-  PY_ARGS+=("PH1_CONTRASTIVE_ENABLED=$PH1_CONTRASTIVE_ENABLED")
-fi
-if [[ -n "$PH1_CONTRASTIVE_COEF" ]]; then
-  PY_ARGS+=("PH1_CONTRASTIVE_COEF=$PH1_CONTRASTIVE_COEF")
-fi
-if [[ -n "$PH1_CONTRASTIVE_TEMP" ]]; then
-  PY_ARGS+=("PH1_CONTRASTIVE_TEMP=$PH1_CONTRASTIVE_TEMP")
-fi
-if [[ -n "$PH1_CONTRASTIVE_PROJ_DIM" ]]; then
-  PY_ARGS+=("PH1_CONTRASTIVE_PROJ_DIM=$PH1_CONTRASTIVE_PROJ_DIM")
-fi
-if [[ -n "$PH1_CONTRASTIVE_ENTRY_DROPOUT" ]]; then
-  PY_ARGS+=("PH1_CONTRASTIVE_ENTRY_DROPOUT=$PH1_CONTRASTIVE_ENTRY_DROPOUT")
-fi
-if [[ -n "$PH1_CONTRASTIVE_MULTI_POS" ]]; then
-  PY_ARGS+=("PH1_CONTRASTIVE_MULTI_POS=$PH1_CONTRASTIVE_MULTI_POS")
-fi
-if [[ -n "$PH1_CONTRASTIVE_DENOM_TRAIN_MASK" ]]; then
-  PY_ARGS+=("PH1_CONTRASTIVE_DENOM_TRAIN_MASK=$PH1_CONTRASTIVE_DENOM_TRAIN_MASK")
 fi
 
 # PH1 population arguments

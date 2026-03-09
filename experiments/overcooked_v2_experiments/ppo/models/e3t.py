@@ -106,7 +106,6 @@ class PartnerPredictionModule(nn.Module):
 class ScannedPartnerPredictor(nn.Module):
     """
     PartnerPredictionModule을 시간 축(Time Axis)에 대해 스캔(Scan)하는 래퍼 클래스.
-    STL(Stabilizing Trajectories) 로직은 제거됨.
     """
     action_dim: int = 6
     
@@ -129,8 +128,8 @@ class ScannedPartnerPredictor(nn.Module):
             new_z: current prediction (Batch, ActionDim)
             prediction: current prediction (Batch, ActionDim)
         """
-        # STL 제거: carry(prev_z)는 사용하지 않지만, 다음 스텝의 carry로 전달 (Dummy State)
-        
+        # carry(prev_z)는 scan API 호환을 위해 전달합니다.
+
         # x unpacking
         obs_history, act_history = x
 

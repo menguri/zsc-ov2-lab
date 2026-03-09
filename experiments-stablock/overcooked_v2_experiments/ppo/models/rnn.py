@@ -114,44 +114,6 @@ class ActorCriticRNN(ActorCriticBase):
         return blocked_ln(blocked_model(blocked_states))
 
     @nn.compact
-    def project_blocked_metric(self, blocked_emb):
-        """Return metric-space embedding for PH1 distance/contrastive.
-
-        - PH1_CONTRASTIVE_ENABLED=False: identity (backward-compatible h-space)
-        - PH1_CONTRASTIVE_ENABLED=True : projection + L2 normalization (z-space)
-        """
-        if not bool(self.config.get("PH1_CONTRASTIVE_ENABLED", False)):
-            return blocked_emb
-
-        if self.config["ACTIVATION"] == "relu":
-            activation = nn.relu
-        else:
-            activation = nn.tanh
-
-        proj_dim = int(
-            self.config.get(
-                "PH1_CONTRASTIVE_PROJ_DIM",
-                self.config.get("GRU_HIDDEN_DIM", blocked_emb.shape[-1]),
-            )
-        )
-        proj_dim = max(1, proj_dim)
-        z = nn.Dense(
-            proj_dim,
-            kernel_init=orthogonal(jnp.sqrt(2)),
-            bias_init=constant(0.0),
-            name="blocked_metric_proj",
-        )(blocked_emb)
-        z = activation(z)
-        z = nn.LayerNorm(name="blocked_metric_proj_ln")(z)
-        z_norm = z / jnp.maximum(jnp.linalg.norm(z, axis=-1, keepdims=True), 1e-6)
-        return z_norm
-
-    @nn.compact
-    def encode_blocked_metric(self, blocked_states):
-        blocked_emb = self.encode_blocked(blocked_states)
-        return self.project_blocked_metric(blocked_emb)
-
-    @nn.compact
     def get_obs_embedding(self, obs):
         # Keep old method alias just in case, but redirect to encode_obs
         return self.encode_obs(obs)
@@ -253,7 +215,8 @@ class ActorCriticRNN(ActorCriticBase):
         # [STA-PH1] blocked_states가 이미지(상태/관측)인 경우 인코딩
         # NOTE: blocked target is expected to be a *global full* state, which may
         # have different channel count from the execution observation.
-        blocked_metric_emb = None
+        blocked_emb = None
+        blocked_emb_slots = None
         if blocked_states is not None:
             blocked_states_in = blocked_states.astype(jnp.float32)
 
@@ -266,23 +229,61 @@ class ActorCriticRNN(ActorCriticBase):
             is_image_like = blocked_states_in.ndim >= 4
 
             if is_image_like:
-                # (B,H,W,C) -> (1,B,H,W,C)로 맞추기 (T차원 추가)
-                # 만약 obs가 (T, B, ...) 형태라면 shape를 맞춰줘야 vmap이 정상 동작
-                
-                # Case 1: blocked_states가 (B,H,W,C)인 경우 -> (T,B,H,W,C)로 확장
-                if blocked_states_in.ndim == obs.ndim - 1:
-                    # (B, ...) -> (1, B, ...) broadcast to (T, B, ...)
-                     blocked_states_in = jnp.broadcast_to(
-                        blocked_states_in[jnp.newaxis, ...],
-                        (obs.shape[0],) + blocked_states_in.shape
-                    )
-                # Case 2: blocked_states가 (T,B,H,W,C)인 경우 -> 그대로 사용
+                blocked_single = None
+                blocked_multi = None
 
-                # Separate encoder for blocked targets (global full state)
-                blocked_emb = self.encode_blocked(blocked_states_in)
-                blocked_metric_emb = self.project_blocked_metric(blocked_emb)
-                
-                embedding = jnp.concatenate([embedding, blocked_emb], axis=-1)
+                # Single target path:
+                #  - (B,H,W,C) -> (T,B,H,W,C)
+                #  - (T,B,H,W,C) -> 그대로
+                if blocked_states_in.ndim == obs.ndim - 1:
+                    blocked_single = jnp.broadcast_to(
+                        blocked_states_in[jnp.newaxis, ...],
+                        (obs.shape[0],) + blocked_states_in.shape,
+                    )
+                elif blocked_states_in.ndim == obs.ndim:
+                    if (
+                        blocked_states_in.shape[0] == obs.shape[0]
+                        and blocked_states_in.shape[1] == obs.shape[1]
+                    ):
+                        blocked_single = blocked_states_in
+                    elif blocked_states_in.shape[0] == obs.shape[1]:
+                        # (B,K,H,W,C) with missing time -> multi target
+                        blocked_multi = jnp.broadcast_to(
+                            blocked_states_in[jnp.newaxis, ...],
+                            (obs.shape[0],) + blocked_states_in.shape,
+                        )
+                elif blocked_states_in.ndim == obs.ndim + 1:
+                    # Multi target:
+                    #  - (B,K,H,W,C) -> (T,B,K,H,W,C)
+                    #  - (T,B,K,H,W,C) -> 그대로
+                    if (
+                        blocked_states_in.shape[0] == obs.shape[0]
+                        and blocked_states_in.shape[1] == obs.shape[1]
+                    ):
+                        blocked_multi = blocked_states_in
+                    elif blocked_states_in.shape[0] == obs.shape[1]:
+                        blocked_multi = jnp.broadcast_to(
+                            blocked_states_in[jnp.newaxis, ...],
+                            (obs.shape[0],) + blocked_states_in.shape,
+                        )
+
+                if blocked_multi is not None:
+                    # Encode each slot independently, then concatenate slot embeddings.
+                    t_dim, b_dim, k_dim = blocked_multi.shape[:3]
+                    flat_multi = blocked_multi.reshape(
+                        (t_dim, b_dim * k_dim) + blocked_multi.shape[3:]
+                    )
+                    blocked_emb_flat = self.encode_blocked(flat_multi)
+                    blocked_emb_slots = blocked_emb_flat.reshape(
+                        (t_dim, b_dim, k_dim, blocked_emb_flat.shape[-1])
+                    )
+                    blocked_emb = blocked_emb_slots.reshape(
+                        (t_dim, b_dim, k_dim * blocked_emb_slots.shape[-1])
+                    )
+                    embedding = jnp.concatenate([embedding, blocked_emb], axis=-1)
+                elif blocked_single is not None:
+                    blocked_emb = self.encode_blocked(blocked_single)
+                    embedding = jnp.concatenate([embedding, blocked_emb], axis=-1)
             else:
                 # 좌표 기반(stablock 기존) 경로는 유지 (Dense input 등)
                 if blocked_states_in.ndim == 2:
@@ -326,8 +327,8 @@ class ActorCriticRNN(ActorCriticBase):
         # [STA-PH1] Return extras
         extras = {
             "obs_emb": obs_emb,
-            "blocked_emb": blocked_emb if "blocked_emb" in locals() else None,
-            "blocked_metric_emb": blocked_metric_emb,
+            "blocked_emb": blocked_emb,
+            "blocked_emb_slots": blocked_emb_slots,
         }
 
         return (rnn_state, z_state), pi, jnp.squeeze(critic, axis=-1), extras

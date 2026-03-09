@@ -20,9 +20,6 @@ set -euo pipefail
 : "${LAYOUT:=cramped_room}"                   # ENV_GROUP=original 일 때 사용
 : "${EXPERIMENT:=cnn}"                         # 예: cnn, rnn-op, rnn-sa, rnn-fcp
 
-# E3T (Mixture Partner Policy) defaults
-: "${ANCHOR_ENABLED:=0}"       # 1 => enable STL anchor
-
 # JAX 메모리 설정
 : "${XLA_PYTHON_CLIENT_PREALLOCATE:=false}"    # 메모리 선할당 방지
 : "${XLA_PYTHON_CLIENT_MEM_FRACTION:=0.7}"     # 0.0~1.0 비율 (너무 낮으면 성능 저하 가능)
@@ -116,6 +113,8 @@ ENV_DEVICE=""                 # env를 CPU/GPU 어디에 둘지: cpu|gpu (기본
 CAST_OBS_BF16="0"             # 관측을 bf16으로 캐스팅하여 메모리 절감
 MODEL_NUM_ENVS_OVERRIDE=""    # model.NUM_ENVS override
 MODEL_NUM_STEPS_OVERRIDE=""   # model.NUM_STEPS override
+USE_PM_OVERRIDE=""            # USE_PARTNER_MODELING override
+PRED_COEF_OVERRIDE=""         # PRED_LOSS_COEF override
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -134,9 +133,10 @@ while [[ $# -gt 0 ]]; do
     --env-device) ENV_DEVICE="$2"; shift 2;;     # cpu|gpu
     --bf16-obs)   CAST_OBS_BF16="1"; shift 1;;
     --nenvs)      MODEL_NUM_ENVS_OVERRIDE="$2"; shift 2;;
-  --nsteps)     MODEL_NUM_STEPS_OVERRIDE="$2"; shift 2;;
+    --nsteps)     MODEL_NUM_STEPS_OVERRIDE="$2"; shift 2;;
     --e3t-epsilon) E3T_EPSILON="$2"; shift 2;;
-    --anchor)     ANCHOR_ENABLED="1"; shift 1;;
+    --use-partner-modeling) USE_PM_OVERRIDE="$2"; shift 2;;
+    --pred-loss-coef) PRED_COEF_OVERRIDE="$2"; shift 2;;
     --mem-frac)   XLA_PYTHON_CLIENT_MEM_FRACTION="$2"; shift 2;;
     --fcp-device) FCP_DEVICE="$2"; shift 2 ;;
     --)           shift; break;;
@@ -314,9 +314,14 @@ if [[ -v E3T_EPSILON && -n "$E3T_EPSILON" ]]; then
   PY_ARGS+=("E3T_EPSILON=${E3T_EPSILON}")
 fi
 
-# STL Anchor override
-if [[ "$ANCHOR_ENABLED" == "1" ]]; then
-  PY_ARGS+=("model.anchor=True")
+# E3T partner modeling override
+if [[ -n "$USE_PM_OVERRIDE" ]]; then
+  PY_ARGS+=("USE_PARTNER_MODELING=${USE_PM_OVERRIDE}")
+fi
+
+# E3T prediction loss coefficient override
+if [[ -n "$PRED_COEF_OVERRIDE" ]]; then
+  PY_ARGS+=("PRED_LOSS_COEF=${PRED_COEF_OVERRIDE}")
 fi
 
 # ====================================================
@@ -359,4 +364,3 @@ cd experiments
 
 env -u LD_LIBRARY_PATH -u XLA_FLAGS \
   python overcooked_v2_experiments/ppo/main.py "${PY_ARGS[@]}" 2>&1 | filter_ptx
-

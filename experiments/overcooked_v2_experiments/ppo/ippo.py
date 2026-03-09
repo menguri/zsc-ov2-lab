@@ -805,8 +805,11 @@ def make_train(
                 rand_pred_input = rand_pred_input / (norm + 1e-6)
                 
                 # 3. Combine
-                is_ego = (actor_indices == 0)
-                combined_prediction = jnp.where(is_ego[:, None], pred_logits, rand_pred_input)
+                target_ego_idxs = jnp.tile(next_ego_idxs, env.num_agents)
+                is_ego = (actor_indices == target_ego_idxs)
+                combined_prediction = jnp.where(
+                    is_ego[:, None], pred_logits, rand_pred_input
+                )
                 
                 # 4. Add Time Dimension (1, Batch, ActionDim)
                 partner_prediction = combined_prediction[jnp.newaxis, ...]
@@ -852,8 +855,19 @@ def make_train(
             def _update_epoch(update_state, unused):
                 def _update_minbatch(train_state, batch_info):
                     init_hstate, traj_batch, advantages, targets = batch_info
+                    effective_train_mask = jnp.ones_like(
+                        traj_batch.done, dtype=jnp.bool_
+                    )
+                    if population is not None:
+                        effective_train_mask = effective_train_mask & jax.lax.stop_gradient(
+                            traj_batch.train_mask.astype(jnp.bool_)
+                        )
+                    if alg_name == "E3T":
+                        effective_train_mask = effective_train_mask & jax.lax.stop_gradient(
+                            traj_batch.is_ego.astype(jnp.bool_)
+                        )
 
-                    def _loss_fn(params, init_hstate, traj_batch, gae, targets):
+                    def _loss_fn(params, init_hstate, traj_batch, gae, targets, effective_train_mask):
                         hstate = init_hstate
                         if hstate is not None:
                             if isinstance(hstate, tuple):
@@ -862,9 +876,7 @@ def make_train(
                                 hstate = hstate.squeeze(axis=0)
                             # hstate = jax.lax.stop_gradient(hstate)
 
-                        train_mask = True
-                        if population is not None:
-                            train_mask = jax.lax.stop_gradient(traj_batch.train_mask)
+                        train_mask = effective_train_mask
 
                         # --------------------------------------------------------------
                         # E3T Partner Prediction Loss & Gradient Blocking
@@ -1004,6 +1016,7 @@ def make_train(
                             traj_batch,
                             advantages,
                             targets,
+                            effective_train_mask,
                         )
 
                         # jax.debug.print(
@@ -1027,7 +1040,7 @@ def make_train(
                     # )
 
                     train_state, total_loss = jax.lax.cond(
-                        traj_batch.train_mask.any(),
+                        effective_train_mask.any(),
                         _perform_update,
                         _no_op,
                     )

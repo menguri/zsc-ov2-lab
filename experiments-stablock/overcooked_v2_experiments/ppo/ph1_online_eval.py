@@ -101,23 +101,11 @@ def _safe_float(x, default=0.0):
         return default
 
 
-def _ph1_contrastive_enabled(policy: PPOPolicy) -> bool:
-    cfg = getattr(policy, "config", {})
-    enabled = bool(cfg.get("PH1_CONTRASTIVE_ENABLED", False))
-    if isinstance(cfg, dict) and "alg" in cfg:
-        enabled = bool(cfg["alg"].get("PH1_CONTRASTIVE_ENABLED", enabled))
-    return enabled
-
-
 def _encode_policy_metric_emb(policy: PPOPolicy, blocked_actor):
-    method_name = "encode_blocked_metric" if _ph1_contrastive_enabled(policy) else "encode_blocked"
-    method = getattr(policy.network, method_name, None)
-    if method is None:
-        method = policy.network.encode_blocked
     return policy.network.apply(
         policy.params,
         blocked_actor,
-        method=method,
+        method=policy.network.encode_blocked,
     )
 
 

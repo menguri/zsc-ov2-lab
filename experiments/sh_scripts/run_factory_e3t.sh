@@ -11,8 +11,8 @@ cd "$(dirname "$0")" || exit 1
 # Common Configuration
 EXP="rnn-e3t"
 ENV_DEVICE="cpu"
-NENVS=128
-NSTEPS=128
+NENVS=256
+NSTEPS=256
 
 # E3T Specific Settings
 EPSILON=0.3
@@ -24,21 +24,10 @@ run_e3t() {
     local gpus=$1
     local env=$2
     local layout=$3
-    local anchor=$4  # 1=Enable STL, 0=Disable
-    
-    local anchor_arg=""
-    local tag_arg=""
-    
-    if [ "$anchor" == "1" ]; then
-        anchor_arg="--anchor"
-        tag_arg="--tags e3t,stl"
-    else
-        tag_arg="--tags e3t"
-    fi
     
     echo "================================================================================"
     echo "STARTING E3T EXPERIMENT"
-    echo "ENV: $env, LAYOUT: $layout, ANCHOR: $anchor"
+    echo "ENV: $env, LAYOUT: $layout"
     echo "GPUS: $gpus"
     echo "================================================================================"
     
@@ -50,10 +39,9 @@ run_e3t() {
         --nenvs $NENVS \
         --nsteps $NSTEPS \
         --e3t-epsilon $EPSILON \
-        $anchor_arg \
-        $tag_arg \
-        USE_PARTNER_MODELING=$USE_PM \
-        PRED_LOSS_COEF=$PRED_COEF"
+        --use-partner-modeling $USE_PM \
+        --pred-loss-coef $PRED_COEF \
+        --tags e3t"
         
     if [ -n "$layout" ]; then
         cmd="$cmd --layout $layout"
@@ -70,12 +58,12 @@ run_e3t() {
 
 # ==============================================================================
 # Execution List (Uncomment lines to run)
-# Usage: run_e3t <GPUS> <ENV_GROUP> <LAYOUT> <ANCHOR(0/1)>
+# Usage: run_e3t <GPUS> <ENV_GROUP> <LAYOUT>
 # ==============================================================================
 
 # 1. Grounded Coord Simple
 # run_e3t "5,6" "coord_ring" ""
-run_e3t "3,4,5,6,7" "grounded_coord_simple" ""
+# run_e3t "3,4,5,6,7" "grounded_coord_simple" ""
 
 # # # 2. Grounded Coord Ring
 # run_e3t "0,1,3,4,5" "grounded_coord_ring" ""
@@ -92,26 +80,17 @@ run_e3t "3,4,5,6,7" "grounded_coord_simple" ""
 # # 6. Test Time Wide
 # run_e3t "5,6" "test_time_wide" ""
 
-# # 5. Cramped Room (Original)
-# run_e3t "0,1,2,3,4" "cramped_room" ""
+# 5. Cramped Room (Original)
+run_e3t "7" "cramped_room" ""
 
-# # 6. Asymmetric Advantages (Original)
-# run_e3t "0,1,3,4,5" "asymm_advantages" ""
+# 6. Asymmetric Advantages (Original)
+run_e3t "7" "asymm_advantages" ""
 
-# # 7. Coordination Ring (Original)
-# run_e3t "5,6" "coord_ring" ""
+# 7. Coordination Ring (Original)
+run_e3t "7" "coord_ring" ""
 
-# # 8. Forced Coordination (Original)
-# run_e3t "1,3,4,6,7" "forced_coord" ""
+# 8. Forced Coordination (Original)
+run_e3t "7" "forced_coord" ""
 
 # 9. Counter Circuit (Original)
-run_e3t "3,4,5,6,7" "counter_circuit" ""
-
-# # 7. Coordination Ring (Original)
-# run_e3t "5,6" "coord_ring" "" "1"
-
-# # 8. Forced Coordination (Original)
-# run_e3t "5,6" "forced_coord" "" "1"
-
-# # 9. Counter Circuit (Original)
-# run_e3t "5,6" "counter_circuit" "" "1"
+run_e3t "7" "counter_circuit" ""

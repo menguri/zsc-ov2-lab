@@ -29,6 +29,10 @@ SIGMA=1.0 # Default value, can be overridden
 DIST_THRESH=0.1
 POOL_SIZE=128
 NORMAL_PROB=0.5
+PH1_MULTI_PENALTY_ENABLED=False
+PH1_MAX_PENALTY_COUNT=1
+PH1_MULTI_PENALTY_SINGLE_WEIGHT=2.0
+PH1_MULTI_PENALTY_OTHER_WEIGHT=1.0
 PH1_EPSILON=0.2 # With probability epsilon, one agent takes random action
 WARMUP_STEPS=1000000 # 5m steps for warm-up (normal interaction)
 PH1_EVAL_ENABLED=False # 학습 중 eval/snapshot 비활성화, 종료 후 버퍼 기반 일괄 export 사용
@@ -42,15 +46,6 @@ PH1_EVAL_OFFLINE_ONLY=True
 PH1_EVAL_LOG_VIDEO=True  # 학습 후 오프라인 비디오 생성 on/off 스위치
 PH1_POST_TRAIN_OFFLINE=False # 학습/평가 완전 분리: 학습 후 별도 eval 스크립트로 실행
 PH1_OFFLINE_VIZ_MAX_STEPS=400
-
-# Contrastive Settings (override 가능: VAR=... ./sh_scripts/run_factory_ph1.sh)
-: "${PH1_CONTRASTIVE_ENABLED:=True}"
-: "${PH1_CONTRASTIVE_COEF:=0.05}"
-: "${PH1_CONTRASTIVE_TEMP:=0.1}"
-: "${PH1_CONTRASTIVE_PROJ_DIM:=64}"
-: "${PH1_CONTRASTIVE_ENTRY_DROPOUT:=0.05}"
-: "${PH1_CONTRASTIVE_MULTI_POS:=True}"
-: "${PH1_CONTRASTIVE_DENOM_TRAIN_MASK:=True}"
 
 # E3T Settings
 EPSILON=0.0 # 사용자 요청으로 0.0
@@ -83,7 +78,6 @@ run_ph1() {
     echo "BETA_SCHEDULE: enabled=$PH1_BETA_SCHEDULE_ENABLED start=$PH1_BETA_START end=$beta_end horizon=$PH1_BETA_SCHEDULE_HORIZON_ENV_STEPS"
     echo "SIGMA: $sigma"
     echo "WARMUP: $warmup_steps"
-    echo "CONTRASTIVE: enabled=$PH1_CONTRASTIVE_ENABLED coef=$PH1_CONTRASTIVE_COEF temp=$PH1_CONTRASTIVE_TEMP proj_dim=$PH1_CONTRASTIVE_PROJ_DIM entry_dropout=$PH1_CONTRASTIVE_ENTRY_DROPOUT multi_pos=$PH1_CONTRASTIVE_MULTI_POS denom_train_mask=$PH1_CONTRASTIVE_DENOM_TRAIN_MASK"
     echo "================================================================================"
 
     local cmd="./run_user_wandb.sh \
@@ -106,15 +100,12 @@ run_ph1() {
         --ph1-dist $DIST_THRESH \
         --ph1-pool-size $POOL_SIZE \
         --ph1-normal-prob $normal_prob \
+        --ph1-multi-penalty-enabled $PH1_MULTI_PENALTY_ENABLED \
+        --ph1-max-penalty-count $PH1_MAX_PENALTY_COUNT \
+        --ph1-multi-penalty-single-weight $PH1_MULTI_PENALTY_SINGLE_WEIGHT \
+        --ph1-multi-penalty-other-weight $PH1_MULTI_PENALTY_OTHER_WEIGHT \
         --ph1-epsilon $ph1_epsilon \
         --ph1-warmup-steps $warmup_steps \
-        --ph1-contrastive-enabled $PH1_CONTRASTIVE_ENABLED \
-        --ph1-contrastive-coef $PH1_CONTRASTIVE_COEF \
-        --ph1-contrastive-temp $PH1_CONTRASTIVE_TEMP \
-        --ph1-contrastive-proj-dim $PH1_CONTRASTIVE_PROJ_DIM \
-        --ph1-contrastive-entry-dropout $PH1_CONTRASTIVE_ENTRY_DROPOUT \
-        --ph1-contrastive-multi-pos $PH1_CONTRASTIVE_MULTI_POS \
-        --ph1-contrastive-denom-train-mask $PH1_CONTRASTIVE_DENOM_TRAIN_MASK \
         --ph1-eval-enabled $PH1_EVAL_ENABLED \
         --ph1-eval-every-env-steps $PH1_EVAL_EVERY_ENV_STEPS \
         --ph1-eval-video-every-env-steps $PH1_EVAL_VIDEO_EVERY_ENV_STEPS \
@@ -173,10 +164,6 @@ run_ph1() {
 # Execution List
 # Usage:
 #   run_ph1 <GPUS> <ENV> <BETA> <OMEGA> <NORMAL_PROB> <PH1_EPSILON> <WARMUP_STEPS> <SIGMA> <BETA_END>
-# Contrastive example:
-#   PH1_CONTRASTIVE_ENABLED=True PH1_CONTRASTIVE_COEF=0.05 PH1_CONTRASTIVE_TEMP=0.1 PH1_CONTRASTIVE_PROJ_DIM=64 PH1_CONTRASTIVE_ENTRY_DROPOUT=0.05 PH1_CONTRASTIVE_MULTI_POS=True PH1_CONTRASTIVE_DENOM_TRAIN_MASK=True ./sh_scripts/run_factory_ph1.sh
-# Minimal toggle example:
-#   PH1_CONTRASTIVE_ENABLED=True ./sh_scripts/run_factory_ph1.sh
 #
 # Policy:
 # - no for-loop

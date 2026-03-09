@@ -56,34 +56,34 @@ run_sa() {
 # ==============================================================================
 
 # 1. Grounded Coord Simple
-run_sa "0,1,2,3,4" "grounded_coord_simple" ""
+# run_sa "0,1,2,3,4" "grounded_coord_simple" ""
 
-# 2. Grounded Coord Ring
-run_sa "0,1,2,3,4" "grounded_coord_ring" ""
+# # 2. Grounded Coord Ring
+# run_sa "0,1,2,3,4" "grounded_coord_ring" ""
 
-# 3. Demo Cook Simple
-run_sa "0,1,2,3,4" "demo_cook_simple" ""
+# # 3. Demo Cook Simple
+# run_sa "0,1,2,3,4" "demo_cook_simple" ""
 
-# 4. Demo Cook Wide
-run_sa "0,1,2,3,4" "demo_cook_wide" ""
+# # 4. Demo Cook Wide
+# run_sa "0,1,2,3,4" "demo_cook_wide" ""
 
-# 5. Test Time Simple
-run_sa "0,1,2,3,4" "test_time_simple" ""
+# # 5. Test Time Simple
+# run_sa "0,1,2,3,4" "test_time_simple" ""
 
-# 6. Test Time Wide
-run_sa "0,1,2,3,4" "test_time_wide" ""
+# # 6. Test Time Wide
+# run_sa "0,1,2,3,4" "test_time_wide" ""
 
 # 7. Cramped Room (Original)
-run_sa "0,1,2,3,4" "cramped_room" ""
+run_sa "5,6" "cramped_room" ""
 
 # 8. Asymmetric Advantages (Original)
-run_sa "0,1,2,3,4" "asymm_advantages" ""
+run_sa "5,6" "asymm_advantages" ""
 
 # 9. Coordination Ring (Original)
-run_sa "0,1,2,3,4" "coord_ring" ""
+run_sa "5,6" "coord_ring" ""
 
 # 10. Forced Coordination (Original)
-run_sa "0,1,2,3,4" "forced_coord" ""
+run_sa "5,6" "forced_coord" ""
 
 # 11. Counter Circuit (Original)
-run_sa "0,1,2,3,4" "counter_circuit" ""
+run_sa "5,6" "counter_circuit" ""
