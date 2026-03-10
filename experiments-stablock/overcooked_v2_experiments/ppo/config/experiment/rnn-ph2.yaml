@@ -6,7 +6,12 @@ defaults:
 ALG_NAME: "PH2-E3T"
 USE_PARTNER_MODELING: True
 PRED_LOSS_COEF: 1.0
+STATE_PRED_LOSS_COEF: 1.0
 E3T_EPSILON: 0.0
+ACTION_PREDICTION: true
+STATE_PREDICTION: false
+# Default from GRU_HIDDEN_DIM=128 -> 64 (override via CLI as needed).
+PRED_Z_DIM: 64
 
 # Keep PH1 mechanics available (pool/sample/penalty), PH2 wrapper controls schedules.
 PH1_ENABLED: True
@@ -51,3 +56,6 @@ PH2_RATIO_STAGE2: 1
 PH2_RATIO_STAGE3: 2
 # Fixed ind-match probability default (50%). Set null to use stage schedule.
 PH2_FIXED_IND_PROB: 0.5
+# If True, spec/ind share the action predictor ("shared_predictor") parameters.
+# Default False preserves legacy PH2 behavior and checkpoint compatibility.
+SHARED_PREDICTION: false

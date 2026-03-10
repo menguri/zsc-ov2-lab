@@ -4,10 +4,13 @@ from typing import Any, Dict, Optional
 import jax
 import jax.numpy as jnp
 import numpy as np
+from flax import serialization
 from flax.training.train_state import TrainState
 
 from .ippo_ph2_core import make_train as make_train_core
 from .policy import PPOPolicy
+
+_SHARED_PREDICTOR_KEYS = ("shared_predictor", "shared_state_predictor")
 
 
 def _resolve_num_updates(model_cfg: Dict[str, Any]) -> int:
@@ -94,6 +97,88 @@ def _set_checkpoint(accum, params, ckpt_idx):
     )
 
 
+def _extract_shared_predictor_subtree(tree, target_key="shared_predictor"):
+    state_dict = serialization.to_state_dict(tree)
+
+    def _find(node):
+        if isinstance(node, dict):
+            if target_key in node:
+                return node[target_key]
+            for child in node.values():
+                out = _find(child)
+                if out is not None:
+                    return out
+        return None
+
+    return _find(state_dict)
+
+
+def _replace_shared_predictor_subtree(tree, shared_subtree, target_key="shared_predictor"):
+    if shared_subtree is None:
+        return tree
+    state_dict = serialization.to_state_dict(tree)
+
+    def _replace(node):
+        if not isinstance(node, dict):
+            return False, node
+        out = dict(node)
+        replaced = False
+        if target_key in out:
+            out[target_key] = shared_subtree
+            replaced = True
+        for key, child in out.items():
+            child_replaced, child_out = _replace(child)
+            if child_replaced:
+                out[key] = child_out
+                replaced = True
+        return replaced, out
+
+    replaced, new_state_dict = _replace(state_dict)
+    if not replaced:
+        return tree
+    return serialization.from_state_dict(tree, new_state_dict)
+
+
+def _sync_train_state_shared_predictor(
+    train_state: TrainState,
+    shared_params_subtree,
+    shared_opt_subtree,
+    target_key="shared_predictor",
+) -> TrainState:
+    new_params = _replace_shared_predictor_subtree(
+        train_state.params, shared_params_subtree, target_key=target_key
+    )
+    new_opt_state = _replace_shared_predictor_subtree(
+        train_state.opt_state, shared_opt_subtree, target_key=target_key
+    )
+    if (new_params is train_state.params) and (new_opt_state is train_state.opt_state):
+        return train_state
+    return train_state.replace(params=new_params, opt_state=new_opt_state)
+
+
+def _extract_shared_predictor_bundle(tree):
+    return {
+        key: _extract_shared_predictor_subtree(tree, target_key=key)
+        for key in _SHARED_PREDICTOR_KEYS
+    }
+
+
+def _sync_train_state_shared_predictor_bundle(
+    train_state: TrainState,
+    shared_params_bundle,
+    shared_opt_bundle,
+) -> TrainState:
+    out = train_state
+    for key in _SHARED_PREDICTOR_KEYS:
+        out = _sync_train_state_shared_predictor(
+            out,
+            shared_params_bundle.get(key),
+            shared_opt_bundle.get(key),
+            target_key=key,
+        )
+    return out
+
+
 def _maybe_parse_resume_state(initial_train_state):
     # Optional resume layout:
     # - TrainState: spec only
@@ -125,6 +210,7 @@ def make_train(
     population_config: Optional[Dict[str, Any]] = None,
 ):
     cfg = copy.deepcopy(dict(config))
+    shared_prediction = bool(cfg.get("SHARED_PREDICTION", False))
     model_cfg = cfg["model"]
     total_updates_cfg = _resolve_num_updates(model_cfg)
     total_updates = (
@@ -176,6 +262,8 @@ def make_train(
     ind_cfg["POPULATION_USE_BLOCKED_INPUT"] = bool(
         cfg.get("PH2_SPEC_USE_BLOCKED_INPUT", True)
     )
+    spec_cfg["SHARED_PREDICTION"] = shared_prediction
+    ind_cfg["SHARED_PREDICTION"] = shared_prediction
 
     # Build one-update trainers. We run a PH1-like update loop at wrapper level.
     spec_step = make_train_core(
@@ -230,6 +318,19 @@ def make_train(
             ind_state = ind_runner_state[0]
         else:
             ind_runner_state = _set_runner_field(ind_runner_state, 0, ind_state)
+
+        # Shared-prediction mode sync:
+        # initialize shared predictor state from spec, then inject into ind.
+        if shared_prediction:
+            shared_pred_params = _extract_shared_predictor_bundle(spec_state.params)
+            shared_pred_opt = _extract_shared_predictor_bundle(spec_state.opt_state)
+            ind_state = _sync_train_state_shared_predictor_bundle(
+                ind_state, shared_pred_params, shared_pred_opt
+            )
+            ind_runner_state = _set_runner_field(ind_runner_state, 0, ind_state)
+        else:
+            shared_pred_params = {}
+            shared_pred_opt = {}
 
         if int(initial_offset) != 0:
             spec_runner_state = _set_runner_field(
@@ -375,43 +476,213 @@ def make_train(
                     ind_out_c,
                 )
 
-            carry = (
-                spec_runner_state,
-                ind_runner_state,
-                spec_ckpt_accum,
-                ind_ckpt_accum,
-                recent_ckpts,
-                recent_has,
-                curr_update,
-                rng_loop,
-                last_spec_out,
-                last_ind_out,
-            )
-            carry = _advance_one_step(carry)
+            def _advance_one_step_shared(carry):
+                (
+                    spec_runner_c,
+                    ind_runner_c,
+                    spec_ckpt_c,
+                    ind_ckpt_c,
+                    recent_ckpts_c,
+                    recent_has_c,
+                    curr_update_c,
+                    rng_loop_c,
+                    _last_spec_out_c,
+                    _last_ind_out_c,
+                    shared_params_c,
+                    shared_opt_c,
+                ) = carry
 
-            if run_steps > 1:
-                def _scan_step(carry_scan, _):
-                    return _advance_one_step(carry_scan), None
+                rng_loop_c, rng_spec_call, rng_ind_call = jax.random.split(rng_loop_c, 3)
+                spec_state_c = spec_runner_c[0]
+                ind_state_c = ind_runner_c[0]
 
-                carry, _ = jax.lax.scan(
-                    _scan_step,
-                    carry,
-                    None,
-                    length=run_steps - 1,
+                # Inject shared predictor into both train states before each role update.
+                spec_state_c = _sync_train_state_shared_predictor_bundle(
+                    spec_state_c, shared_params_c, shared_opt_c
+                )
+                ind_state_c = _sync_train_state_shared_predictor_bundle(
+                    ind_state_c, shared_params_c, shared_opt_c
+                )
+                spec_runner_c = _set_runner_field(spec_runner_c, 0, spec_state_c)
+                ind_runner_c = _set_runner_field(ind_runner_c, 0, ind_state_c)
+
+                spec_out_c = spec_step(
+                    rng_spec_call,
+                    population=policy_ind,
+                    initial_runner_state=spec_runner_c,
+                    log_seed_override=log_seed_override,
+                    population_params_override=ind_state_c.params,
+                )
+                next_spec_runner = spec_out_c["runner_state"]
+                next_spec_state = next_spec_runner[0]
+                shared_params_after_spec = _extract_shared_predictor_bundle(
+                    next_spec_state.params
+                )
+                shared_opt_after_spec = _extract_shared_predictor_bundle(
+                    next_spec_state.opt_state
                 )
 
-            (
-                spec_runner_state,
-                ind_runner_state,
-                spec_ckpt_accum,
-                ind_ckpt_accum,
-                recent_ckpts,
-                recent_has,
-                curr_update,
-                rng_loop,
-                last_spec_out,
-                last_ind_out,
-            ) = carry
+                # Spec updated predictor is injected into ind before ind step.
+                ind_state_step = _sync_train_state_shared_predictor_bundle(
+                    ind_state_c, shared_params_after_spec, shared_opt_after_spec
+                )
+                ind_runner_step = _set_runner_field(ind_runner_c, 0, ind_state_step)
+                ind_out_c = ind_step(
+                    rng_ind_call,
+                    population=policy_spec,
+                    initial_runner_state=ind_runner_step,
+                    log_seed_override=log_seed_override,
+                    population_params_override=next_spec_state.params,
+                )
+                next_ind_runner = ind_out_c["runner_state"]
+                next_ind_state = next_ind_runner[0]
+
+                # Final shared predictor after ind update; sync both states.
+                shared_params_next = _extract_shared_predictor_bundle(
+                    next_ind_state.params
+                )
+                shared_opt_next = _extract_shared_predictor_bundle(
+                    next_ind_state.opt_state
+                )
+                next_spec_state = _sync_train_state_shared_predictor_bundle(
+                    next_spec_state, shared_params_next, shared_opt_next
+                )
+                next_ind_state = _sync_train_state_shared_predictor_bundle(
+                    next_ind_state, shared_params_next, shared_opt_next
+                )
+                next_spec_runner = _set_runner_field(next_spec_runner, 0, next_spec_state)
+                next_ind_runner = _set_runner_field(next_ind_runner, 0, next_ind_state)
+
+                next_update = curr_update_c + jnp.int32(1)
+                if num_checkpoints > 0:
+                    hit_selector = checkpoint_steps == next_update
+                    has_hit = jnp.any(hit_selector)
+                    hit_idx = jnp.argmax(hit_selector)
+
+                    spec_ckpt_c = jax.lax.cond(
+                        has_hit,
+                        lambda x: _set_checkpoint(x, next_spec_state.params, hit_idx),
+                        lambda x: x,
+                        spec_ckpt_c,
+                    )
+                    ind_ckpt_c = jax.lax.cond(
+                        has_hit,
+                        lambda x: _set_checkpoint(x, next_ind_state.params, hit_idx),
+                        lambda x: x,
+                        ind_ckpt_c,
+                    )
+
+                    recent_tilde_c, has_recent_c = _extract_recent_tilde_from_runner(
+                        spec_out_c["runner_state"]
+                    )
+                    recent_ckpts_c = jax.lax.cond(
+                        has_hit,
+                        lambda x: x.at[hit_idx].set(recent_tilde_c),
+                        lambda x: x,
+                        recent_ckpts_c,
+                    )
+                    recent_has_c = jax.lax.cond(
+                        has_hit,
+                        lambda x: x.at[hit_idx].set(has_recent_c),
+                        lambda x: x,
+                        recent_has_c,
+                    )
+
+                return (
+                    next_spec_runner,
+                    next_ind_runner,
+                    spec_ckpt_c,
+                    ind_ckpt_c,
+                    recent_ckpts_c,
+                    recent_has_c,
+                    next_update,
+                    rng_loop_c,
+                    spec_out_c,
+                    ind_out_c,
+                    shared_params_next,
+                    shared_opt_next,
+                )
+
+            if shared_prediction:
+                carry = (
+                    spec_runner_state,
+                    ind_runner_state,
+                    spec_ckpt_accum,
+                    ind_ckpt_accum,
+                    recent_ckpts,
+                    recent_has,
+                    curr_update,
+                    rng_loop,
+                    last_spec_out,
+                    last_ind_out,
+                    shared_pred_params,
+                    shared_pred_opt,
+                )
+                carry = _advance_one_step_shared(carry)
+
+                if run_steps > 1:
+                    def _scan_step_shared(carry_scan, _):
+                        return _advance_one_step_shared(carry_scan), None
+
+                    carry, _ = jax.lax.scan(
+                        _scan_step_shared,
+                        carry,
+                        None,
+                        length=run_steps - 1,
+                    )
+
+                (
+                    spec_runner_state,
+                    ind_runner_state,
+                    spec_ckpt_accum,
+                    ind_ckpt_accum,
+                    recent_ckpts,
+                    recent_has,
+                    curr_update,
+                    rng_loop,
+                    last_spec_out,
+                    last_ind_out,
+                    shared_pred_params,
+                    shared_pred_opt,
+                ) = carry
+            else:
+                carry = (
+                    spec_runner_state,
+                    ind_runner_state,
+                    spec_ckpt_accum,
+                    ind_ckpt_accum,
+                    recent_ckpts,
+                    recent_has,
+                    curr_update,
+                    rng_loop,
+                    last_spec_out,
+                    last_ind_out,
+                )
+                carry = _advance_one_step(carry)
+
+                if run_steps > 1:
+                    def _scan_step(carry_scan, _):
+                        return _advance_one_step(carry_scan), None
+
+                    carry, _ = jax.lax.scan(
+                        _scan_step,
+                        carry,
+                        None,
+                        length=run_steps - 1,
+                    )
+
+                (
+                    spec_runner_state,
+                    ind_runner_state,
+                    spec_ckpt_accum,
+                    ind_ckpt_accum,
+                    recent_ckpts,
+                    recent_has,
+                    curr_update,
+                    rng_loop,
+                    last_spec_out,
+                    last_ind_out,
+                ) = carry
 
             spec_state = spec_runner_state[0]
             ind_state = ind_runner_state[0]

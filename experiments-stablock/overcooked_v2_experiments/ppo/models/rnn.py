@@ -3,12 +3,11 @@ from typing import Dict, Sequence
 import jax
 import jax.numpy as jnp
 import flax.linen as nn
-from flax.linen import remat
 import distrax
 from flax.linen.initializers import constant, orthogonal
 from .abstract import ActorCriticBase
-from .common import CNN, MLP
-from .e3t import PartnerPredictionModule, ScannedPartnerPredictor
+from .common import CNN
+from .e3t import ScannedPartnerPredictor, ScannedPartnerStatePredictor
 
 
 class ScannedRNN(nn.Module):
@@ -51,10 +50,29 @@ class ScannedRNN(nn.Module):
 class ActorCriticRNN(ActorCriticBase):
 
     @staticmethod
-    def initialize_carry(batch_size, hidden_size, action_dim=6):
+    def initialize_carry(batch_size, hidden_size, pred_dim=6):
         rnn_carry = ScannedRNN.initialize_carry(batch_size, hidden_size)
-        z_carry = jnp.zeros((batch_size, action_dim))
+        z_carry = jnp.zeros((batch_size, pred_dim))
         return (rnn_carry, z_carry)
+
+    def _state_prediction_enabled(self) -> bool:
+        return bool(self.config.get("STATE_PREDICTION", False))
+
+    def _action_prediction_enabled(self) -> bool:
+        if self._state_prediction_enabled():
+            return False
+        return bool(self.config.get("ACTION_PREDICTION", True))
+
+    def _pred_z_dim(self) -> int:
+        return int(
+            self.config.get(
+                "PRED_Z_DIM",
+                max(1, int(self.config["GRU_HIDDEN_DIM"]) // 2),
+            )
+        )
+
+    def _policy_pred_dim(self) -> int:
+        return self._pred_z_dim() if self._state_prediction_enabled() else int(self.action_dim)
 
     @nn.compact
     def encode_obs(self, obs):
@@ -138,7 +156,7 @@ class ActorCriticRNN(ActorCriticBase):
             rnn_state, z_state = hidden
         else:
             rnn_state = hidden
-            z_state = jnp.zeros((hidden.shape[0], self.action_dim))
+            z_state = jnp.zeros((hidden.shape[0], self._policy_pred_dim()))
 
         obs, dones = x
 
@@ -166,23 +184,34 @@ class ActorCriticRNN(ActorCriticBase):
             else:
                 act_history_seq = act_history
             
-            # STL Prediction
-            # STL Removed
             predictor_in = (obs_history_seq, act_history_seq)
-            
-            # Use name="shared_predictor" to share parameters with predict_partner
-            # Run the predictor to ensure params are initialized or to get prediction
-            new_z_state, generated_prediction = ScannedPartnerPredictor(action_dim=self.action_dim, name="shared_predictor")(z_state, predictor_in)
-            
-            # Remove Time dimension: (1, Batch, Dim) -> (Batch, Dim)
-            # Scan 결과는 항상 Time 차원을 포함하므로, 단일 스텝인 경우 제거
-            if obs_history.ndim == 5:
-                new_z_state = new_z_state[0]
-                generated_prediction = generated_prediction[0]
-            
-            if partner_prediction is None:
-                z_state = new_z_state
-                partner_prediction = generated_prediction
+
+            if self._state_prediction_enabled():
+                new_z_state, state_out = ScannedPartnerStatePredictor(
+                    action_dim=self.action_dim,
+                    z_dim=self._pred_z_dim(),
+                    name="shared_state_predictor",
+                )(z_state, predictor_in)
+                generated_context_z, _generated_action_logits, _generated_next_z = state_out
+                if obs_history.ndim == 5:
+                    new_z_state = new_z_state[0]
+                    generated_context_z = generated_context_z[0]
+                if partner_prediction is None:
+                    z_state = new_z_state
+                    partner_prediction = generated_context_z
+            elif self._action_prediction_enabled():
+                # Use name="shared_predictor" to keep legacy action-only path/ckpt compatibility.
+                new_z_state, generated_prediction = ScannedPartnerPredictor(
+                    action_dim=self.action_dim,
+                    name="shared_predictor",
+                )(z_state, predictor_in)
+                # Remove Time dimension: (1, Batch, Dim) -> (Batch, Dim)
+                if obs_history.ndim == 5:
+                    new_z_state = new_z_state[0]
+                    generated_prediction = generated_prediction[0]
+                if partner_prediction is None:
+                    z_state = new_z_state
+                    partner_prediction = generated_prediction
 
         # print("cnn shapes", rnn_state.shape, obs.shape, dones.shape)
 
@@ -365,6 +394,56 @@ class ActorCriticRNN(ActorCriticBase):
         if result.ndim == 4 and result.shape[1] == 1:
             result = result.squeeze(axis=1)
         return result
+
+    @nn.compact
+    def predict_partner_state(self, obs_history, act_history, z_state=None):
+        """
+        State-prediction branch output.
+        Returns:
+            {
+                "context_z": (Batch, PRED_Z_DIM),
+                "action_logits": (Batch, ActionDim),
+                "next_z": (Batch, PRED_Z_DIM),
+            }
+        """
+        batch_size = obs_history.shape[0]
+        pred_dim = self._pred_z_dim()
+        if z_state is None:
+            z_state = jnp.zeros((batch_size, pred_dim))
+
+        obs_history_seq = obs_history[jnp.newaxis, ...]
+        act_history_seq = act_history[jnp.newaxis, ...]
+        predictor_in = (obs_history_seq, act_history_seq)
+
+        _, state_out_seq = ScannedPartnerStatePredictor(
+            action_dim=self.action_dim,
+            z_dim=pred_dim,
+            name="shared_state_predictor",
+        )(z_state, predictor_in)
+        context_z_seq, action_logits_seq, next_z_seq = state_out_seq
+
+        context_z = context_z_seq[0]
+        action_logits = action_logits_seq[0]
+        next_z = next_z_seq[0]
+        return {
+            "context_z": context_z,
+            "action_logits": action_logits,
+            "next_z": next_z,
+        }
+
+    @nn.compact
+    def encode_obs_to_pred_z(self, obs):
+        """
+        Encode observation into prediction latent target z.
+        """
+        obs_emb = self.encode_obs(obs)
+        z = nn.Dense(
+            self._pred_z_dim(),
+            kernel_init=orthogonal(jnp.sqrt(2)),
+            bias_init=constant(0.0),
+            name="state_target_proj",
+        )(obs_emb)
+        return nn.tanh(z)
 
     @nn.compact
     def predict_partner_trajectory(self, obs_history, act_history, z_init=None):

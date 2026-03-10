@@ -22,7 +22,7 @@ AUTO_BEFORE_RUN=""
 AUTO_FROM_RUN="20260303-000027_31hadyvh_grounded_coord_simple_e3t_ph2"
 AUTO_TO_RUN="20260303-192651_a0t7uvpt_grounded_coord_simple_e3t_ph2_ct1_e0p2_o20_s3"
 AUTO_GPU_IDX=0
-AUTO_BATCH_SIZE=3
+AUTO_BATCH_SIZE=1
 AUTO_PRESET_EVAL_MODE="cross-play" # cross-play | eval-analysis | eval-viz
 AUTO_PH1_CROSS_NUM_SEEDS=3
 AUTO_PH1_CROSS_NUM_RECENT_TILDES=10
@@ -30,7 +30,8 @@ AUTO_PH2_CROSS_NUM_SEEDS=5
 
 # Optional manual fallback commands (used only when AUTO_DISCOVER_PRESETS=false).
 PRESET_FACTORY_COMMANDS=(
-  "./run_visualize.sh --gpu 7 --dir runs/20260309-004425_mtddbwld_counter_circuit_e3t_ph2_e0p2_o10_s2 --cross --num_seeds 5"
+  # "./run_visualize.sh --gpu 4 --dir runs/20260309-064245_c9bl24w9_counter_circuit_e3t_ph2_e0p2_o10_s2 --cross --num_seeds 5"
+  "./run_visualize.sh --gpu 4 --dir runs/20260309-113734_xed1ab9r_counter_circuit_e3t_ph2_e0p2_o10_s2 --cross --num_seeds 5"
   # "./run_visualize.sh --gpu 1 --dir runs/20260306-114435_zb151oi7_coord_ring_e3t_ph2_ct0_e0p2_o10_s2 --cross --num_seeds 5"
   # "./run_visualize.sh --gpu 2 --dir runs/20260306-160646_r5awqode_cramped_room_e3t_ph2_ct0_e0p2_o10_s2 --cross --num_seeds 5"
   # "./run_visualize.sh --gpu 3 --dir runs/20260306-201807_u99vy5ws_forced_coord_e3t_ph2_ct0_e0p2_o10_s2 --cross --num_seeds 5"

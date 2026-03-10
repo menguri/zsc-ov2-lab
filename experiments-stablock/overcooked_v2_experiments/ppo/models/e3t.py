@@ -138,3 +138,93 @@ class ScannedPartnerPredictor(nn.Module):
         z = model(obs_history, act_history)
         
         return z, z
+
+
+class PartnerStatePredictionModule(nn.Module):
+    """
+    State-prediction branch:
+      - Encode history into latent z
+      - Decode z into (current partner action logits, next partner obs latent z)
+    """
+    action_dim: int = 6
+    z_dim: int = 64
+
+    @nn.compact
+    def __call__(self, obs_history, act_history):
+        # obs_history: (..., Context, H, W, C)
+        # act_history: (..., Context)
+        *batch_dims, H, W, C = obs_history.shape
+
+        obs_flat = obs_history.reshape(-1, H, W, C)
+        act_flat = act_history.reshape(-1)
+
+        encoder = StepWiseEncoder(action_dim=self.action_dim)
+        encoded_steps = encoder(obs_flat, act_flat)  # (Total_Batch, 64)
+        encoded_steps = encoded_steps.reshape(*batch_dims, -1)
+        history_repr = encoded_steps.reshape(*batch_dims[:-1], -1)
+
+        x = history_repr
+        for _ in range(3):
+            x = nn.Dense(
+                features=64,
+                kernel_init=orthogonal(jnp.sqrt(2)),
+                bias_init=constant(0.0),
+            )(x)
+            x = nn.leaky_relu(x)
+
+        # Context latent z used as policy input in state-prediction mode.
+        z = nn.Dense(
+            features=self.z_dim,
+            kernel_init=orthogonal(jnp.sqrt(2)),
+            bias_init=constant(0.0),
+        )(x)
+        z = nn.tanh(z)
+
+        d = z
+        for _ in range(2):
+            d = nn.Dense(
+                features=64,
+                kernel_init=orthogonal(jnp.sqrt(2)),
+                bias_init=constant(0.0),
+            )(d)
+            d = nn.leaky_relu(d)
+
+        action_logits = nn.Dense(
+            features=self.action_dim,
+            kernel_init=orthogonal(0.01),
+            bias_init=constant(0.0),
+        )(d)
+        next_z = nn.Dense(
+            features=self.z_dim,
+            kernel_init=orthogonal(0.01),
+            bias_init=constant(0.0),
+        )(d)
+        next_z = nn.tanh(next_z)
+
+        return z, action_logits, next_z
+
+
+class ScannedPartnerStatePredictor(nn.Module):
+    """
+    Scan wrapper for state-prediction branch.
+    Carry holds latent z.
+    """
+    action_dim: int = 6
+    z_dim: int = 64
+
+    @functools.partial(
+        nn.scan,
+        variable_broadcast="params",
+        in_axes=0,
+        out_axes=0,
+        split_rngs={"params": False},
+    )
+    @nn.compact
+    def __call__(self, carry, x):
+        obs_history, act_history = x
+        model = PartnerStatePredictionModule(
+            action_dim=self.action_dim,
+            z_dim=self.z_dim,
+        )
+        z, action_logits, next_z = model(obs_history, act_history)
+        return z, (z, action_logits, next_z)
