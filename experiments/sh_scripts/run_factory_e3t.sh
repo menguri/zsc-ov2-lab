@@ -93,4 +93,4 @@ run_e3t() {
 # run_e3t "5,6" "counter_circuit" ""
 
 # 6. Asymmetric Advantages (Original)
-run_e3t "5,6" "asymm_advantages" ""
+run_e3t "6,7" "asymm_advantages" ""
