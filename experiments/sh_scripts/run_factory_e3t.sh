@@ -11,7 +11,7 @@ cd "$(dirname "$0")" || exit 1
 # Common Configuration
 EXP="rnn-e3t"
 ENV_DEVICE="cpu"
-NENVS=256
+NENVS=64
 NSTEPS=256
 
 # E3T Specific Settings
@@ -80,17 +80,17 @@ run_e3t() {
 # # 6. Test Time Wide
 # run_e3t "5,6" "test_time_wide" ""
 
-# 5. Cramped Room (Original)
-run_e3t "7" "cramped_room" ""
+# # 5. Cramped Room (Original)
+# run_e3t "5,6" "cramped_room" ""
 
-# 6. Asymmetric Advantages (Original)
-run_e3t "7" "asymm_advantages" ""
+# # 7. Coordination Ring (Original)
+# run_e3t "5,6" "coord_ring" ""
 
-# 7. Coordination Ring (Original)
-run_e3t "7" "coord_ring" ""
-
-# 8. Forced Coordination (Original)
-run_e3t "7" "forced_coord" ""
+# # 8. Forced Coordination (Original)
+# run_e3t "5,6" "forced_coord" ""
 
 # 9. Counter Circuit (Original)
-run_e3t "7" "counter_circuit" ""
+# run_e3t "5,6" "counter_circuit" ""
+
+# 6. Asymmetric Advantages (Original)
+run_e3t "5,6" "asymm_advantages" ""

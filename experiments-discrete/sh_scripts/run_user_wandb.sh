@@ -5,6 +5,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+VENV_DIR="${REPO_ROOT}/overcooked_v2"
+LEGACY_VENV_DIR="${REPO_ROOT}/overcookedv2"
+
 # ==============================================================================
 # 1) 기본값 설정 (환경변수로 덮어쓰기 가능)
 # ==============================================================================
@@ -43,7 +48,13 @@ export XLA_PYTHON_CLIENT_MEM_FRACTION
 export XLA_FLAGS
 
 # 프로젝트 전용 Python 가상환경 bin 경로 우선
-export PATH="/home/mlic/mingukang/ex-overcookedv2/overcookedv2/bin:$PATH"
+if [[ -d "${VENV_DIR}/bin" ]]; then
+  export PATH="${VENV_DIR}/bin:$PATH"
+elif [[ -d "${LEGACY_VENV_DIR}/bin" ]]; then
+  export PATH="${LEGACY_VENV_DIR}/bin:$PATH"
+else
+  echo "[WARN] No venv bin directory found at ${VENV_DIR} or ${LEGACY_VENV_DIR}"
+fi
 
 # ==============================================================================
 # 2) GPU / CUDA 환경 설정
@@ -345,10 +356,19 @@ fi
 
 # ====================================================
 # LD_LIBRARY_PATH / XLA_FLAGS를 해제하여 라이브러리 충돌 회피
-cd ~/mingukang/ex-overcookedv2
+cd "${REPO_ROOT}"
 
-# 1) uv env 활성화
-source overcooked_v2/bin/activate
+# 1) venv 활성화
+if [[ -f "${VENV_DIR}/bin/activate" ]]; then
+  # shellcheck disable=SC1090
+  source "${VENV_DIR}/bin/activate"
+elif [[ -f "${LEGACY_VENV_DIR}/bin/activate" ]]; then
+  # shellcheck disable=SC1090
+  source "${LEGACY_VENV_DIR}/bin/activate"
+else
+  echo "[ERROR] venv activate script not found: ${VENV_DIR}/bin/activate" >&2
+  exit 1
+fi
 
 # 2) WandB 로그인
 if [[ -f "experiments-discrete/wandb_info/wandb_api_key" ]]; then
@@ -385,4 +405,3 @@ export PYTHONPATH="/home/mlic/mingukang/ex-overcookedv2/experiments-discrete:${P
 
 env -u LD_LIBRARY_PATH -u XLA_FLAGS \
   python -m overcooked_v2_experiments.ppo.main "${PY_ARGS[@]}" 2>&1 | filter_ptx
-

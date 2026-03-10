@@ -57,6 +57,7 @@ class Transition(NamedTuple):
     partner_action: jnp.ndarray
     is_ego: jnp.ndarray
     z_state: jnp.ndarray
+    next_partner_obs: jnp.ndarray
     blocked_states: jnp.ndarray
     prev_action: jnp.ndarray
     partner_prediction: jnp.ndarray
@@ -130,6 +131,9 @@ def make_train(
     e3t_enabled = ("E3T" in alg_name_u)
     e3t_epsilon = config.get("E3T_EPSILON", 0.05)
     use_partner_modeling = config.get("USE_PARTNER_MODELING", True)
+    state_prediction = bool(config.get("STATE_PREDICTION", False))
+    action_prediction = bool(config.get("ACTION_PREDICTION", True)) and (not state_prediction)
+    prediction_enabled = bool(action_prediction or state_prediction)
     learner_use_blocked_input = bool(
         config.get("LEARNER_USE_BLOCKED_INPUT", ph1_enabled or bool(config.get("STABLOCK_ENABLED", False)))
     )
@@ -164,6 +168,8 @@ def make_train(
         env = jaxmarl.make(env_config["ENV_NAME"], **env_config["ENV_KWARGS"])
 
     ACTION_DIM = env.action_space(env.agents[0]).n
+    pred_z_dim = int(config.get("PRED_Z_DIM", max(1, int(model_config["GRU_HIDDEN_DIM"]) // 2)))
+    policy_pred_dim = pred_z_dim if state_prediction else ACTION_DIM
 
     model_config["NUM_ACTORS"] = env.num_agents * model_config["NUM_ENVS"]
     model_config["NUM_UPDATES"] = (
@@ -423,9 +429,16 @@ def make_train(
         dummy_blocked_states = None
         # NOTE: agent_idx conditioning removed
 
-        if (e3t_enabled or (ph1_enabled and use_ph1_partner_pred)) and use_partner_modeling:
-            # Shape: (Time=1, Batch=NUM_ENVS, ActionDim=6)
-            dummy_partner_prediction = jnp.zeros((1, model_config["NUM_ENVS"], ACTION_DIM))
+        if (
+            (e3t_enabled or (ph1_enabled and use_ph1_partner_pred))
+            and use_partner_modeling
+            and prediction_enabled
+        ):
+            # Shape: (Time=1, Batch=NUM_ENVS, policy_pred_dim)
+            dummy_partner_prediction = jnp.zeros(
+                (1, model_config["NUM_ENVS"], policy_pred_dim),
+                dtype=jnp.float32,
+            )
             # Shape: (1, Batch, Context=5, H, W, C)
             dummy_obs_hist = jnp.zeros((1, model_config["NUM_ENVS"], 5, *state_shape))
             dummy_act_hist = jnp.zeros((1, model_config["NUM_ENVS"], 5), dtype=jnp.int32)
@@ -747,7 +760,7 @@ def make_train(
                     )
 
                 # Capture z_state from input hstate (before update) for storage
-                z_state_in = jnp.zeros((model_config["NUM_ACTORS"], ACTION_DIM))
+                z_state_in = jnp.zeros((model_config["NUM_ACTORS"], policy_pred_dim))
                 if isinstance(hstate, tuple):
                     _, z_state_in = hstate
 
@@ -766,7 +779,11 @@ def make_train(
                 # E3T History Update & Partner Prediction
                 # --------------------------------------------------------------
                 # 1. History Update
-                if (e3t_enabled or (ph1_enabled and use_ph1_partner_pred)) and use_partner_modeling:
+                if (
+                    (e3t_enabled or (ph1_enabled and use_ph1_partner_pred))
+                    and use_partner_modeling
+                    and prediction_enabled
+                ):
                     # last_done이 True이면 히스토리 초기화 (Masking)
                     reset_mask = (1 - last_done.astype(jnp.int32))[:, None]
                     obs_history = obs_history * reset_mask[..., None, None, None].astype(jnp.float32)
@@ -790,28 +807,57 @@ def make_train(
                 
                 # 2. Partner Prediction
                 partner_prediction = None
-                combined_prediction = jnp.zeros((model_config["NUM_ACTORS"], ACTION_DIM))
-                if (e3t_enabled or (ph1_enabled and use_ph1_partner_pred)) and use_partner_modeling:
+                combined_prediction = jnp.zeros((model_config["NUM_ACTORS"], policy_pred_dim))
+                if (
+                    (e3t_enabled or (ph1_enabled and use_ph1_partner_pred))
+                    and use_partner_modeling
+                    and prediction_enabled
+                ):
                     # Extract z_state if available
                     z_in = None
                     if isinstance(hstate, tuple):
                         _, z_in = hstate
                         # z_in is (Batch, Dim)
-                    
-                    # anchor removed
 
-                    # (1) 실제 파트너 예측 (Ego용)
-                    real_prediction = network.apply(train_state.params, obs_history, act_history, z_state=z_in, method='predict_partner')
-                    
-                    # (2) 무작위 행동 임베딩 (Partner용)
-                    # 파트너는 Ego를 예측하지 않고, 무작위 행동(또는 노이즈)을 조건으로 받아 자신의 정책을 수행한다고 가정
-                    rng, rng_rand_input = jax.random.split(rng)
-                    rand_act_input = jax.random.randint(rng_rand_input, (model_config["NUM_ACTORS"],), 0, ACTION_DIM)
-                    rand_pred_input = jax.nn.one_hot(rand_act_input, num_classes=ACTION_DIM)
-                    
-                    # L2 Normalize (PartnerPredictionModule 출력 스케일과 맞춤)
-                    norm = jnp.linalg.norm(rand_pred_input, axis=-1, keepdims=True)
-                    rand_pred_input = rand_pred_input / (norm + 1e-6)
+                    if state_prediction:
+                        pred_state = network.apply(
+                            train_state.params,
+                            obs_history,
+                            act_history,
+                            z_state=z_in,
+                            method="predict_partner_state",
+                        )
+                        real_prediction = pred_state["context_z"]
+                        rng, rng_rand_input = jax.random.split(rng)
+                        rand_pred_input = jax.random.normal(
+                            rng_rand_input,
+                            (model_config["NUM_ACTORS"], policy_pred_dim),
+                        )
+                        norm = jnp.linalg.norm(rand_pred_input, axis=-1, keepdims=True)
+                        rand_pred_input = rand_pred_input / (norm + 1e-6)
+                    else:
+                        # (1) 실제 파트너 예측 (Ego용)
+                        real_prediction = network.apply(
+                            train_state.params,
+                            obs_history,
+                            act_history,
+                            z_state=z_in,
+                            method="predict_partner",
+                        )
+                        # (2) 무작위 행동 임베딩 (Partner용)
+                        rng, rng_rand_input = jax.random.split(rng)
+                        rand_act_input = jax.random.randint(
+                            rng_rand_input,
+                            (model_config["NUM_ACTORS"],),
+                            0,
+                            ACTION_DIM,
+                        )
+                        rand_pred_input = jax.nn.one_hot(
+                            rand_act_input,
+                            num_classes=ACTION_DIM,
+                        )
+                        norm = jnp.linalg.norm(rand_pred_input, axis=-1, keepdims=True)
+                        rand_pred_input = rand_pred_input / (norm + 1e-6)
                     
                     # (3) Ego vs Partner 구분하여 입력 선택
                     # Ego(Agent 0)는 예측값 사용, Partner(Agent 1)는 무작위 입력 사용 (기본)
@@ -819,7 +865,7 @@ def make_train(
                     use_real_pred = (ph1_enabled and use_ph1_partner_pred) | (stablock_enabled == True) | is_ego
                     combined_prediction = jnp.where(use_real_pred[:, None], real_prediction, rand_pred_input)
                     
-                    # (Batch, ActionDim) -> (1, Batch, ActionDim) for Actor input
+                    # (Batch, D_pred) -> (1, Batch, D_pred) for Actor input
                     partner_prediction = combined_prediction[jnp.newaxis, ...]
 
                 ac_in = (
@@ -889,7 +935,11 @@ def make_train(
                         pop_act_hist = None
                         if population_use_blocked_input:
                             pop_blocked_states = blocked_states_actor
-                        if population_use_partner_pred_input and use_partner_modeling:
+                        if (
+                            population_use_partner_pred_input
+                            and use_partner_modeling
+                            and prediction_enabled
+                        ):
                             pop_obs_hist = obs_history
                             pop_act_hist = act_history
                         pop_actions, population_hstate, _ = population.compute_action(
@@ -1437,6 +1487,16 @@ def make_train(
                 # E3T: 현재 스텝의 파트너 행동 (Target Label)
                 # action_for_env는 현재 스텝의 '내' 행동이므로, 파트너의 행동을 얻기 위해 swap
                 current_partner_action = jnp.roll(action_for_env, shift=model_config["NUM_ENVS"], axis=0)
+                next_obs_batch = jnp.stack([obsv[a] for a in env.agents]).reshape(
+                    -1, *state_shape
+                )
+                if cast_obs_bf16:
+                    next_obs_batch = next_obs_batch.astype(jnp.bfloat16)
+                next_partner_obs = jnp.roll(
+                    next_obs_batch,
+                    shift=model_config["NUM_ENVS"],
+                    axis=0,
+                )
 
                 transition = Transition(
                     jnp.tile(done["__all__"], env.num_agents),
@@ -1452,6 +1512,7 @@ def make_train(
                     current_partner_action,
                     is_ego,
                     z_state_in,
+                    next_partner_obs,
                     blocked_states_actor,
                     last_action,
                     combined_prediction,
@@ -1556,23 +1617,53 @@ def make_train(
             # [Stablock/E3T] last_val 계산 시점의 ego 마스크
             target_ego_idxs = jnp.tile(next_ego_idxs, env.num_agents)
             is_ego_last = (actor_indices == target_ego_idxs)
-            if (e3t_enabled or (ph1_enabled and use_ph1_partner_pred)) and use_partner_modeling:
-                # 1. Predict
-                pred_logits = network.apply(train_state.params, obs_history, act_history, method='predict_partner')
-                
-                # 2. Random Input for Partner
-                rng, rng_rand_input = jax.random.split(rng)
-                rand_act_input = jax.random.randint(rng_rand_input, (model_config["NUM_ACTORS"],), 0, ACTION_DIM)
-                rand_pred_input = jax.nn.one_hot(rand_act_input, num_classes=ACTION_DIM)
-                norm = jnp.linalg.norm(rand_pred_input, axis=-1, keepdims=True)
-                rand_pred_input = rand_pred_input / (norm + 1e-6)
-                
-                # 3. Combine (dynamic ego idx 기준)
+            if (
+                (e3t_enabled or (ph1_enabled and use_ph1_partner_pred))
+                and use_partner_modeling
+                and prediction_enabled
+            ):
+                if state_prediction:
+                    pred_state = network.apply(
+                        train_state.params,
+                        obs_history,
+                        act_history,
+                        method="predict_partner_state",
+                    )
+                    pred_ctx = pred_state["context_z"]
+                    rng, rng_rand_input = jax.random.split(rng)
+                    rand_pred_input = jax.random.normal(
+                        rng_rand_input,
+                        (model_config["NUM_ACTORS"], policy_pred_dim),
+                    )
+                    norm = jnp.linalg.norm(rand_pred_input, axis=-1, keepdims=True)
+                    rand_pred_input = rand_pred_input / (norm + 1e-6)
+                else:
+                    pred_ctx = network.apply(
+                        train_state.params,
+                        obs_history,
+                        act_history,
+                        method="predict_partner",
+                    )
+                    rng, rng_rand_input = jax.random.split(rng)
+                    rand_act_input = jax.random.randint(
+                        rng_rand_input,
+                        (model_config["NUM_ACTORS"],),
+                        0,
+                        ACTION_DIM,
+                    )
+                    rand_pred_input = jax.nn.one_hot(rand_act_input, num_classes=ACTION_DIM)
+                    norm = jnp.linalg.norm(rand_pred_input, axis=-1, keepdims=True)
+                    rand_pred_input = rand_pred_input / (norm + 1e-6)
+
                 # PH1 활성화 시 모든 에이전트가 Real Prediction 사용 (V-gap 정확도를 위해)
                 use_real_pred_last = (ph1_enabled and use_ph1_partner_pred) | (stablock_enabled == True) | is_ego_last
-                combined_prediction = jnp.where(use_real_pred_last[:, None], pred_logits, rand_pred_input)
-                
-                # 4. Add Time Dimension (1, Batch, ActionDim)
+                combined_prediction = jnp.where(
+                    use_real_pred_last[:, None],
+                    pred_ctx,
+                    rand_pred_input,
+                )
+
+                # 4. Add Time Dimension (1, Batch, D_pred)
                 partner_prediction = combined_prediction[jnp.newaxis, ...]
 
             # [Stablock] last_val 계산에도 blocked_states를 전달
@@ -1673,11 +1764,17 @@ def make_train(
                         # --------------------------------------------------------------
                         pred_loss = 0.0
                         pred_accuracy = 0.0
+                        state_pred_z_loss = 0.0
+                        state_pred_action_loss = 0.0
                         partner_prediction = None
                         
                         use_ph1 = config.get("PH1_ENABLED", False)
 
-                        if (e3t_enabled or use_ph1) and use_partner_modeling:
+                        if (
+                            (e3t_enabled or use_ph1)
+                            and use_partner_modeling
+                            and prediction_enabled
+                        ):
                             # 1. Forward Pass for Prediction
                             # PPO 미니배치는 셔플되어 시간 연속성이 없으므로 Scan을 사용할 수 없습니다.
                             # 따라서 단일 스텝 예측(predict_partner)을 사용합니다.
@@ -1687,63 +1784,77 @@ def make_train(
                             obs_hist_flat = traj_batch.obs_history
                             act_hist_flat = traj_batch.act_history
                             
-                            # --------------------------------------------------------------
-                            # [E3T Implementation] Partner Prediction Loss
-                            # --------------------------------------------------------------
-                            # 인코더는 파트너의 다음 행동을 예측하도록 학습합니다.
-                            # z_state는 Rollout 시점의 값을 사용하여 일관성을 유지합니다 (Carry state matching).
-                            
-                            pred_logits = network.apply(params, obs_hist_flat, act_hist_flat, z_state=traj_batch.z_state, method='predict_partner')
-                            
-                            # Policy Input (Actor Training) uses the same prediction
-                            pred_logits_policy = pred_logits
-
-                            # 2. Label Matching & Loss Calculation
-                            # 예측값: (Minibatch, ActionDim)
-                            pred_logits_flat = pred_logits
-                            
-                            # 정답값: (Minibatch,)
                             target_labels_flat = traj_batch.partner_action.astype(jnp.int32)
-                            
-                            # 3. Compute Cross-Entropy Loss (예측 손실 계산 - Raw 기준)
-                            pred_loss_vec = optax.softmax_cross_entropy_with_integer_labels(logits=pred_logits_flat, labels=target_labels_flat)
+                            if state_prediction:
+                                pred_state = network.apply(
+                                    params,
+                                    obs_hist_flat,
+                                    act_hist_flat,
+                                    z_state=traj_batch.z_state,
+                                    method="predict_partner_state",
+                                )
+                                pred_action_logits = pred_state["action_logits"]
+                                pred_next_z = pred_state["next_z"]
+                                pred_context_z = pred_state["context_z"]
 
-                            # PH2에서는 prediction loss도 train_mask 구간만 학습에 기여해야 한다.
-                            pred_loss = _masked_mean(pred_loss_vec, train_mask)
-                            
-                            # Apply Coefficient
-                            pred_loss = pred_loss * config.get("PRED_LOSS_COEF", 1.0)
-                            
-                            # Calculate Accuracy
-                            pred_labels = jnp.argmax(pred_logits_flat, axis=-1)
-                            pred_accuracy = _masked_mean(
-                                pred_labels == target_labels_flat,
-                                train_mask,
-                            )
-                            
-                            # 4. Stop Gradient for Ego Policy (Actor 입력용)
-                            # Actor-Critic 네트워크에 입력으로 주기 위해 gradient를 차단합니다.
-                            partner_prediction_flat = jax.lax.stop_gradient(pred_logits_policy)
-                            # (Minibatch, ActionDim) -> (Minibatch, 1, ActionDim) for Actor Input (if needed)
-                            # 하지만 Actor는 (Batch, ...)를 기대하므로 (Minibatch, 1, ActionDim)으로 확장
+                                action_loss_vec = optax.softmax_cross_entropy_with_integer_labels(
+                                    logits=pred_action_logits,
+                                    labels=target_labels_flat,
+                                )
+                                state_pred_action_loss = _masked_mean(action_loss_vec, train_mask)
+                                pred_accuracy = _masked_mean(
+                                    jnp.argmax(pred_action_logits, axis=-1) == target_labels_flat,
+                                    train_mask,
+                                )
+
+                                target_next_z = network.apply(
+                                    params,
+                                    traj_batch.next_partner_obs.astype(jnp.float32),
+                                    method="encode_obs_to_pred_z",
+                                )
+                                target_next_z = jax.lax.stop_gradient(target_next_z)
+                                z_loss_vec = jnp.mean(
+                                    jnp.square(pred_next_z - target_next_z),
+                                    axis=-1,
+                                )
+                                state_pred_z_loss = _masked_mean(z_loss_vec, train_mask)
+
+                                pred_loss = (
+                                    config.get("PRED_LOSS_COEF", 1.0) * state_pred_action_loss
+                                    + config.get("STATE_PRED_LOSS_COEF", 1.0) * state_pred_z_loss
+                                )
+                                partner_prediction_flat = jax.lax.stop_gradient(pred_context_z)
+                            else:
+                                pred_logits = network.apply(
+                                    params,
+                                    obs_hist_flat,
+                                    act_hist_flat,
+                                    z_state=traj_batch.z_state,
+                                    method="predict_partner",
+                                )
+                                pred_loss_vec = optax.softmax_cross_entropy_with_integer_labels(
+                                    logits=pred_logits,
+                                    labels=target_labels_flat,
+                                )
+                                pred_loss = _masked_mean(pred_loss_vec, train_mask)
+                                pred_loss = pred_loss * config.get("PRED_LOSS_COEF", 1.0)
+                                pred_labels = jnp.argmax(pred_logits, axis=-1)
+                                pred_accuracy = _masked_mean(
+                                    pred_labels == target_labels_flat,
+                                    train_mask,
+                                )
+                                partner_prediction_flat = jax.lax.stop_gradient(pred_logits)
+
                             partner_prediction = partner_prediction_flat[:, jnp.newaxis, :]
-                        
-                        # [PH1/E3T Fix] If PH1 enables partner modeling but condition above failed or partner_prediction still None?
-                        # Actually 'use_partner_modeling' is True in config.
-                        # Wait, the condition `if alg_name == "E3T" and use_partner_modeling:` skipped PH1.
-                        # I changed it to `if (alg_name == "E3T" or use_ph1) and use_partner_modeling:` above.
-                        
-                        # Fallback for shape correctness if prediction is still None but network expects it
-                        # The network expects it if it was initialized with it.
-                        # Initialization uses dummy_partner_prediction if PH1 is enabled.
-                        # So we MUST provide partner_prediction here too.
-                        
-                        if partner_prediction is None and ((e3t_enabled or use_ph1) and use_partner_modeling):
-                             # Should not happen with the fix above, but as a safety measure for correct shape:
-                             # Create dummy zeros (Minibatch, 1, ActionDim)
-                             # But this means we skip prediction loss calculation? Yes, if logic falls here.
-                            # But with my fix above, it should enter the block.
-                             pass
+
+                        if (
+                            partner_prediction is None
+                            and ((e3t_enabled or use_ph1) and use_partner_modeling and prediction_enabled)
+                        ):
+                            partner_prediction = jnp.zeros(
+                                (traj_batch.obs.shape[0], 1, policy_pred_dim),
+                                dtype=jnp.float32,
+                            )
 
                         # RERUN NETWORK
                         # Actor-Critic 네트워크 재실행 (Value, Policy 계산)
@@ -1834,6 +1945,8 @@ def make_train(
                             ratio,
                             pred_loss,
                             pred_accuracy,
+                            state_pred_z_loss,
+                            state_pred_action_loss,
                         )
 
                     def _perform_update():
@@ -1861,7 +1974,7 @@ def make_train(
                         # jax.debug.print("No update")
                         return (train_state, mb_rng), (
                             0.0,
-                            (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                            (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
                         )
 
                     # jax.debug.print(
@@ -2015,6 +2128,8 @@ def make_train(
                 ratio,
                 pred_loss,
                 pred_accuracy,
+                state_pred_z_loss,
+                state_pred_action_loss,
             ) = aux_data
 
             # PPO 학습 손실 메트릭 추가
@@ -2025,6 +2140,8 @@ def make_train(
             metric["ratio"] = ratio                # PPO ratio (new_prob / old_prob)
             metric["pred_loss"] = pred_loss        # 파트너 행동 예측 손실
             metric["pred_accuracy"] = pred_accuracy # 파트너 행동 예측 정확도
+            metric["state_pred_z_loss"] = state_pred_z_loss
+            metric["state_pred_action_loss"] = state_pred_action_loss
             metric["ph1_beta_current"] = ph1_beta_current
             metric["ph1_beta_progress"] = ph1_beta_progress
 
@@ -2169,6 +2286,8 @@ def make_train(
                             jnp.all(jnp.isfinite(ratio)),
                             jnp.all(jnp.isfinite(pred_loss)),
                             jnp.all(jnp.isfinite(pred_accuracy)),
+                            jnp.all(jnp.isfinite(state_pred_z_loss)),
+                            jnp.all(jnp.isfinite(state_pred_action_loss)),
                         ]
                     )
                 )
@@ -2279,7 +2398,12 @@ def make_train(
             next_ph1_probs = ph1_probs
 
             if ph1_enabled:
-                use_partner_pred = ph1_enabled and use_ph1_partner_pred and use_partner_modeling
+                use_partner_pred = (
+                    ph1_enabled
+                    and use_ph1_partner_pred
+                    and use_partner_modeling
+                    and prediction_enabled
+                )
                 ph1_prob_apply_fn = network.apply
                 ph1_prob_params = train_state.params
                 ph1_prob_use_blocked_input = learner_use_blocked_input
@@ -2313,10 +2437,13 @@ def make_train(
 
                 if use_partner_pred:
                     pp_last = traj_batch.partner_prediction[-1].reshape(
-                        env.num_agents, model_config["NUM_ENVS"], ACTION_DIM
+                        env.num_agents, model_config["NUM_ENVS"], policy_pred_dim
                     )
                 else:
-                    pp_last = jnp.zeros((env.num_agents, model_config["NUM_ENVS"], ACTION_DIM), dtype=jnp.float32)
+                    pp_last = jnp.zeros(
+                        (env.num_agents, model_config["NUM_ENVS"], policy_pred_dim),
+                        dtype=jnp.float32,
+                    )
 
                 def _compute_env_probs(obs_env, done_env, h_env, pool_env, pp_env):
                     # obs_env: (Agents, H, W, C_obs)

@@ -5,6 +5,11 @@
 # ------------------------------------------------------------------------------
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+VENV_DIR="${REPO_ROOT}/overcooked_v2"
+LEGACY_VENV_DIR="${REPO_ROOT}/overcookedv2"
+
 # ==============================================================================
 # 1) 기본값 설정 (환경변수로 덮어쓰기 가능)
 # ==============================================================================
@@ -74,6 +79,11 @@ set -euo pipefail
 : "${PH2_RATIO_STAGE3:=}"
 : "${PH2_FIXED_IND_PROB:=}"
 : "${PH2_EPSILON:=}"
+: "${SHARED_PREDICTION:=}"
+: "${ACTION_PREDICTION:=}"
+: "${STATE_PREDICTION:=}"
+: "${PRED_Z_DIM:=}"
+: "${STATE_PRED_LOSS_COEF:=}"
 
 # XLA_FLAGS: 기본 CUDA data dir 설정
 : "${XLA_FLAGS:=--xla_gpu_cuda_data_dir=${CUDA_HOME:-/usr/local/cuda-12.2}}"
@@ -124,7 +134,13 @@ export JAX_NUM_THREADS
 export XLA_CPU_THREAD_LIMIT
 
 # 프로젝트 전용 Python 가상환경 bin 경로 우선
-export PATH="/home/mlic/mingukang/ex-overcookedv2/overcookedv2/bin:$PATH"
+if [[ -d "${VENV_DIR}/bin" ]]; then
+  export PATH="${VENV_DIR}/bin:$PATH"
+elif [[ -d "${LEGACY_VENV_DIR}/bin" ]]; then
+  export PATH="${LEGACY_VENV_DIR}/bin:$PATH"
+else
+  echo "[WARN] No venv bin directory found at ${VENV_DIR} or ${LEGACY_VENV_DIR}"
+fi
 
 # ==============================================================================
 # 2) GPU / CUDA 환경 설정
@@ -261,9 +277,14 @@ while [[ $# -gt 0 ]]; do
     --ph2-ratio-stage3) PH2_RATIO_STAGE3="$2"; shift 2;;
     --ph2-fixed-ind-prob) PH2_FIXED_IND_PROB="$2"; shift 2;;
     --ph2-epsilon) PH2_EPSILON="$2"; shift 2;;
+    --shared-prediction) SHARED_PREDICTION="$2"; shift 2;;
+    --action-prediction) ACTION_PREDICTION="$2"; shift 2;;
+    --state-prediction) STATE_PREDICTION="$2"; shift 2;;
+    --pred-z-dim) PRED_Z_DIM="$2"; shift 2;;
+    --state-pred-loss-coef) STATE_PRED_LOSS_COEF="$2"; shift 2;;
     --ph2-*|--PH2-*)
       echo "[ERROR] Unsupported PH2 flag: $1" >&2
-      echo "        Supported PH2 flags: --ph2-ratio-stage1/2/3, --ph2-fixed-ind-prob, --ph2-epsilon" >&2
+      echo "        Supported PH2 flags: --ph2-ratio-stage1/2/3, --ph2-fixed-ind-prob, --ph2-epsilon, --shared-prediction, --action-prediction, --state-prediction, --pred-z-dim, --state-pred-loss-coef" >&2
       exit 1
       ;;
     *)            echo "[WARN] Unknown arg: $1"; shift 1;;
@@ -585,6 +606,21 @@ fi
 if [[ -n "$PH2_EPSILON" ]]; then
   PY_ARGS+=("PH2_EPSILON=$PH2_EPSILON")
 fi
+if [[ -n "$SHARED_PREDICTION" ]]; then
+  PY_ARGS+=("SHARED_PREDICTION=$SHARED_PREDICTION")
+fi
+if [[ -n "$ACTION_PREDICTION" ]]; then
+  PY_ARGS+=("ACTION_PREDICTION=$ACTION_PREDICTION")
+fi
+if [[ -n "$STATE_PREDICTION" ]]; then
+  PY_ARGS+=("STATE_PREDICTION=$STATE_PREDICTION")
+fi
+if [[ -n "$PRED_Z_DIM" ]]; then
+  PY_ARGS+=("PRED_Z_DIM=$PRED_Z_DIM")
+fi
+if [[ -n "$STATE_PRED_LOSS_COEF" ]]; then
+  PY_ARGS+=("STATE_PRED_LOSS_COEF=$STATE_PRED_LOSS_COEF")
+fi
 
 # E3T epsilon override (rnn-ph1.yaml에 정의됨)
 if [[ -v E3T_EPSILON && -n "$E3T_EPSILON" ]]; then
@@ -598,10 +634,19 @@ fi
 
 # ====================================================
 # LD_LIBRARY_PATH / XLA_FLAGS를 해제하여 라이브러리 충돌 회피
-cd ~/mingukang/ex-overcookedv2
+cd "${REPO_ROOT}"
 
-# 1) uv env 활성화
-source overcooked_v2/bin/activate
+# 1) venv 활성화
+if [[ -f "${VENV_DIR}/bin/activate" ]]; then
+  # shellcheck disable=SC1090
+  source "${VENV_DIR}/bin/activate"
+elif [[ -f "${LEGACY_VENV_DIR}/bin/activate" ]]; then
+  # shellcheck disable=SC1090
+  source "${LEGACY_VENV_DIR}/bin/activate"
+else
+  echo "[ERROR] venv activate script not found: ${VENV_DIR}/bin/activate" >&2
+  exit 1
+fi
 
 # 2) WandB 로그인
 if [[ -f "wandb_info/wandb_api_key" ]]; then

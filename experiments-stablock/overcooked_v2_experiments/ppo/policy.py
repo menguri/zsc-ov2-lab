@@ -74,6 +74,8 @@ class PPOPolicy(AbstractPolicy):
         ph1_enabled = "PH1" in alg_name or bool(self.config.get("PH1_ENABLED", False))
         if "alg" in self.config:
             ph1_enabled = ph1_enabled or bool(self.config["alg"].get("PH1_ENABLED", False))
+        state_prediction = bool(self.config.get("STATE_PREDICTION", False))
+        action_prediction = bool(self.config.get("ACTION_PREDICTION", True)) and (not state_prediction)
         learner_use_blocked_input = bool(self.config.get("LEARNER_USE_BLOCKED_INPUT", True))
         if "alg" in self.config:
             learner_use_blocked_input = bool(
@@ -100,6 +102,7 @@ class PPOPolicy(AbstractPolicy):
         obs_hist_in = None
         act_hist_in = None
         partner_prediction = None
+        pred_logits_for_extras = None
         blocked_states_in = None
 
         if obs_history is not None and e3t_like:
@@ -131,16 +134,27 @@ class PPOPolicy(AbstractPolicy):
 
             # predict_partner 호출 (Batch, k, ...) -> (Batch, ActionDim)
             # method='predict_partner'를 사용하여 ActorCriticRNN 내부의 predict_partner 메서드 호출
-            pred = self.network.apply(
-                params, 
-                obs_hist_in, 
-                act_hist_in, 
-                z_state=z_state,
-                method='predict_partner'
-            )
-            
-            # (Batch, ActionDim) -> (1, Batch, ActionDim) (Time 차원 추가, ActorCriticRNN 입력용)
-            partner_prediction = pred[jnp.newaxis, ...]
+            if state_prediction:
+                pred_state = self.network.apply(
+                    params,
+                    obs_hist_in,
+                    act_hist_in,
+                    z_state=z_state,
+                    method="predict_partner_state",
+                )
+                pred_logits_for_extras = pred_state["action_logits"]
+                partner_prediction = pred_state["context_z"][jnp.newaxis, ...]
+            elif action_prediction:
+                pred = self.network.apply(
+                    params,
+                    obs_hist_in,
+                    act_hist_in,
+                    z_state=z_state,
+                    method="predict_partner",
+                )
+                pred_logits_for_extras = pred
+                # (Batch, ActionDim) -> (1, Batch, ActionDim)
+                partner_prediction = pred[jnp.newaxis, ...]
 
         if blocked_states is not None and learner_use_blocked_input and (e3t_like or ph1_enabled):
             blocked_states = jnp.array(blocked_states)
@@ -185,11 +199,11 @@ class PPOPolicy(AbstractPolicy):
             value_scalar = value[0, 0]
 
         extras = {"value": value_scalar}
-        if partner_prediction is not None:
+        if pred_logits_for_extras is not None:
             if self.with_batching:
-                extras["partner_prediction"] = partner_prediction[0]
+                extras["partner_prediction"] = pred_logits_for_extras
             else:
-                extras["partner_prediction"] = partner_prediction[0, 0]
+                extras["partner_prediction"] = pred_logits_for_extras[0]
 
         if net_extras is not None and isinstance(net_extras, dict):
             blocked_emb = net_extras.get("blocked_emb", None)

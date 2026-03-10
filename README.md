@@ -5,13 +5,12 @@
 ## 설치 (Installation)
 
 ```bash
-# 1. Conda 가상환경 생성 및 활성화
-conda create -n overcooked_v2 python=3.10
-conda activate overcooked_v2
+# 1. 로컬 venv 생성 및 활성화
+python3 -m venv overcooked_v2
+source overcooked_v2/bin/activate
 
 # 2. 의존성 패키지 설치
-pip install -e JaxMARL
-pip install -e experiments
+./scripts/bootstrap_venv.sh
 ```
 
 ## 환경 (Environments)
@@ -121,7 +120,3 @@ FCP는 2단계로 진행됩니다.
    ```
 
 이렇게 하면 서로 다른 알고리즘의 에이전트들이 협력하는 시나리오를 시각화하고 평가할 수 있습니다.
-
-
-
-
