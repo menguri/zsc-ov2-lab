@@ -18,6 +18,11 @@ NSTEPS=128
 FCP_DEVICE="gpu"
 SEEDS=10
 
+# Population annealing settings for FCP mixed training
+: "${POP_ANNEAL_ENABLE:=1}"
+: "${POP_ANNEAL_HORIZON:=30000000}"
+: "${POP_ANNEAL_BEGIN:=0}"
+
 # Function to get FCP path based on env
 get_fcp_path() {
     local env=$1
@@ -71,6 +76,11 @@ run_fcp() {
     echo "STARTING FCP EXPERIMENT"
     echo "ENV: $env, LAYOUT: $layout"
     echo "GPUS: $gpus"
+    if [[ "$POP_ANNEAL_ENABLE" == "1" ]]; then
+        echo "Population Anneal: ON (horizon=$POP_ANNEAL_HORIZON, begin=$POP_ANNEAL_BEGIN)"
+    else
+        echo "Population Anneal: OFF"
+    fi
     echo "================================================================================"
     
     local fcp_path=$(get_fcp_path $env)
@@ -91,6 +101,10 @@ run_fcp() {
         
     if [ -n "$layout" ]; then
         cmd="$cmd --layout $layout"
+    fi
+
+    if [[ "$POP_ANNEAL_ENABLE" == "1" ]]; then
+        cmd="$cmd --pop-anneal-horizon $POP_ANNEAL_HORIZON --pop-anneal-begin $POP_ANNEAL_BEGIN"
     fi
     
     echo "Executing: $cmd"
@@ -125,16 +139,16 @@ run_fcp() {
 # run_fcp "0,1,2,3,4" "test_time_wide" ""
 
 # 7. Cramped Room (Original)
-run_fcp "0,1,2,3,4" "cramped_room" ""
+# run_fcp "0,1,2,3,4" "cramped_room" ""
 
 # 8. Asymmetric Advantages (Original)
-run_fcp "0,1,2,3,4" "asymm_advantages" ""
+# run_fcp "0,1,2,3,4" "asymm_advantages" ""
 
 # 9. Coordination Ring (Original)
-run_fcp "0,1,2,3,4" "coord_ring" ""
+# run_fcp "0,1,2,3,4" "coord_ring" ""
 
 # 10. Forced Coordination (Original)
-run_fcp "0,1,2,3,4" "forced_coord" ""
+# run_fcp "0,1,2,3,4" "forced_coord" ""
 
 # 11. Counter Circuit (Original)
 run_fcp "0,1,2,3,4" "counter_circuit" ""

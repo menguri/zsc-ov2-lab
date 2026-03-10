@@ -134,19 +134,19 @@ TARGET_MAX_COUNT=1
 
 echo "[PH2-SWEEP] start: env=$TARGET_ENV gpus=$SWEEP_GPUS omega=$TARGET_OMEGA sigma=$TARGET_SIGMA max_penalty_count=$TARGET_MAX_COUNT"
 
-# 1) action prediction + shared predictor
-SHARED_PREDICTION="True"
-ACTION_PREDICTION="True"
-STATE_PREDICTION="False"
-echo "[PH2-SWEEP] case=action_shared shared=$SHARED_PREDICTION action=$ACTION_PREDICTION state=$STATE_PREDICTION"
-run_ph2 "$SWEEP_GPUS" "$TARGET_ENV" "$TARGET_OMEGA" "$TARGET_SIGMA" "$TARGET_MAX_COUNT"
+# # 1) action prediction + shared predictor
+# SHARED_PREDICTION="True"
+# ACTION_PREDICTION="True"
+# STATE_PREDICTION="False"
+# echo "[PH2-SWEEP] case=action_shared shared=$SHARED_PREDICTION action=$ACTION_PREDICTION state=$STATE_PREDICTION"
+# run_ph2 "$SWEEP_GPUS" "$TARGET_ENV" "$TARGET_OMEGA" "$TARGET_SIGMA" "$TARGET_MAX_COUNT"
 
-# 2) state prediction + shared predictor
-SHARED_PREDICTION="True"
-ACTION_PREDICTION="False"
-STATE_PREDICTION="True"
-echo "[PH2-SWEEP] case=state_shared shared=$SHARED_PREDICTION action=$ACTION_PREDICTION state=$STATE_PREDICTION"
-run_ph2 "$SWEEP_GPUS" "$TARGET_ENV" "$TARGET_OMEGA" "$TARGET_SIGMA" "$TARGET_MAX_COUNT"
+# # 2) state prediction + shared predictor
+# SHARED_PREDICTION="True"
+# ACTION_PREDICTION="False"
+# STATE_PREDICTION="True"
+# echo "[PH2-SWEEP] case=state_shared shared=$SHARED_PREDICTION action=$ACTION_PREDICTION state=$STATE_PREDICTION"
+# run_ph2 "$SWEEP_GPUS" "$TARGET_ENV" "$TARGET_OMEGA" "$TARGET_SIGMA" "$TARGET_MAX_COUNT"
 
 # 3) state prediction + non-shared predictor
 SHARED_PREDICTION="False"

@@ -485,6 +485,73 @@ def make_train(
                 optax.adam(model_config["LR"], eps=1e-5),
             )
 
+        def _maybe_attach_state_pred_params(train_state_in, rng_init):
+            """
+            Backward-compatible patch for old action-pred checkpoints:
+            ensure state-pred-only params (e.g. state_target_proj) exist.
+            """
+            if not state_prediction:
+                return train_state_in
+
+            params_tree = train_state_in.params
+            if not isinstance(params_tree, (dict, core.FrozenDict)):
+                return train_state_in
+
+            params_coll = params_tree.get("params", None)
+            if not isinstance(params_coll, (dict, core.FrozenDict)):
+                return train_state_in
+
+            if "state_target_proj" in params_coll:
+                return train_state_in
+
+            target_obs_dummy = jnp.zeros(
+                (model_config["NUM_ACTORS"], *state_shape),
+                dtype=jnp.float32,
+            )
+            target_vars = network.init(
+                rng_init,
+                target_obs_dummy,
+                method="encode_obs_to_pred_z",
+            )
+            target_params = target_vars.get("params", {})
+            if "state_target_proj" not in target_params:
+                return train_state_in
+
+            if isinstance(params_tree, core.FrozenDict):
+                mutable_tree = core.unfreeze(params_tree)
+            else:
+                mutable_tree = dict(params_tree)
+
+            existing_params = mutable_tree.get("params", {})
+            if isinstance(existing_params, core.FrozenDict):
+                existing_params = core.unfreeze(existing_params)
+            else:
+                existing_params = dict(existing_params)
+
+            added_param_keys = []
+            for k, v in target_params.items():
+                if k not in existing_params:
+                    existing_params[k] = v
+                    added_param_keys.append(k)
+
+            mutable_tree["params"] = existing_params
+            if isinstance(params_tree, core.FrozenDict):
+                merged_params = core.freeze(mutable_tree)
+            else:
+                merged_params = mutable_tree
+
+            rebuilt_state = TrainState.create(
+                apply_fn=train_state_in.apply_fn,
+                params=merged_params,
+                tx=tx,
+            )
+            rebuilt_state = rebuilt_state.replace(step=train_state_in.step)
+            print(
+                "[STATE_PRED_INIT] Added missing params:",
+                added_param_keys,
+            )
+            return rebuilt_state
+
         train_state = TrainState.create(
             apply_fn=network.apply,
             params=network_params,
@@ -493,6 +560,10 @@ def make_train(
 
         if initial_train_state is not None:
             train_state = initial_train_state
+
+        # Ensure state-pred-only params exist for both fresh init and resumed checkpoints.
+        rng, _rng = jax.random.split(rng)
+        train_state = _maybe_attach_state_pred_params(train_state, _rng)
 
         # INIT ENV state already created above
         init_hstate = initialize_carry(config, model_config["NUM_ACTORS"])
