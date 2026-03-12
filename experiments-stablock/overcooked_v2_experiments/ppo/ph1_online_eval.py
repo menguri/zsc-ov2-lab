@@ -12,13 +12,16 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import wandb
-from imageio import v2 as imageio
-
-from jaxmarl.environments.overcooked_v2.overcooked import OvercookedV2
-from jaxmarl.viz.overcooked_v2_visualizer import OvercookedV2Visualizer
+from PIL import Image
 
 from overcooked_v2_experiments.eval.policy import PolicyPairing
 from overcooked_v2_experiments.eval.rollout import get_rollout
+from overcooked_v2_experiments.eval.utils import (
+    extract_global_full_obs,
+    make_eval_env,
+    render_state_frame,
+    resolve_old_overcooked_flags,
+)
 from overcooked_v2_experiments.ppo.policy import PPOPolicy
 
 
@@ -122,7 +125,8 @@ def _encode_tilde_target_emb(policy: PPOPolicy, num_agents: int, tilde_state: Op
 
 def _compute_rollout_distance_to_target_emb(
     rollout,
-    env: OvercookedV2,
+    env,
+    env_name: str,
     policy: PPOPolicy,
     target_emb,
 ) -> float:
@@ -139,7 +143,7 @@ def _compute_rollout_distance_to_target_emb(
         count = 0
         for t in range(num_steps):
             state_t = jax.tree_util.tree_map(lambda x: x[t], rollout.state_seq)
-            global_full = env.get_obs_default(state_t)[0].astype(jnp.float32)
+            global_full = extract_global_full_obs(env, state_t, env_name)
             global_full_actor = jnp.stack([global_full for _ in range(env.num_agents)], axis=0)
             z_next = _encode_policy_metric_emb(policy, global_full_actor)
             lat_dist = jnp.sqrt(jnp.sum((z_next - target_emb) ** 2, axis=-1))
@@ -202,7 +206,7 @@ def _extract_tilde_agent_pos(
         return (-1, -1)
 
 
-def _get_agent_pos_channels_from_env(env: OvercookedV2):
+def _get_agent_pos_channels_from_env(env, env_name: str = "overcooked_v2"):
     """
     In OvercookedV2 default obs, channel layout (per agent obs) starts with:
       [agent_layer, other_agent_layers, ...]
@@ -212,6 +216,11 @@ def _get_agent_pos_channels_from_env(env: OvercookedV2):
       - agent0 position channel = 0
       - agent1 position channel = size(agent_layer)
     """
+    if env_name != "overcooked_v2":
+        # In classic overcooked obs, the first channels typically correspond
+        # to ego/partner occupancy layers.
+        return 0, 1
+
     try:
         num_ingredients = int(env.layout.num_ingredients)
     except Exception:
@@ -481,15 +490,22 @@ def save_ph1_video_snapshot(
         env_cfg = copy.deepcopy(config["env"]) if "env" in config else {}
         env_kwargs = copy.deepcopy(env_cfg.get("ENV_KWARGS", {}))
         layout = env_kwargs.pop("layout")
-
-        env = OvercookedV2(layout=layout, **env_kwargs)
+        old_overcooked, disable_old_auto = resolve_old_overcooked_flags(config)
+        env, env_name, _resolved_kwargs = make_eval_env(
+            layout,
+            env_kwargs,
+            old_overcooked=old_overcooked,
+            disable_auto=disable_old_auto,
+        )
 
         random_tilde = None
         try:
             key = jax.random.PRNGKey(seed + update_step * 9973)
             _, key_r = jax.random.split(key)
             _, rand_state = env.reset(key_r)
-            random_tilde = np.array(env.get_obs_default(rand_state)[0]).astype(np.float32)
+            random_tilde = np.array(
+                extract_global_full_obs(env, rand_state, env_name)
+            ).astype(np.float32)
         except Exception:
             random_tilde = None
 
@@ -549,6 +565,7 @@ def save_ph1_video_snapshot(
             "update_step": int(update_step),
             "seed": int(seed),
             "layout": str(layout),
+            "env_name": str(env_name),
         }
         try:
             if wandb.run is not None:
@@ -663,8 +680,8 @@ def _render_video_from_rollout(
     env_kwargs: Dict[str, Any],
     max_steps: int = 400,
     force_full_view: bool = False,
+    env_name: str = "overcooked_v2",
 ):
-    viz = OvercookedV2Visualizer()
     agent_view_size = None if force_full_view else env_kwargs.get("agent_view_size", None)
 
     try:
@@ -685,7 +702,7 @@ def _render_video_from_rollout(
             src_t = min(t, num_steps - 1)
             try:
                 state_t = jax.tree_util.tree_map(lambda x: x[src_t], rollout.state_seq)
-                frame_t = viz._render_state(state_t, agent_view_size)
+                frame_t = render_state_frame(state_t, env_name, agent_view_size)
                 frame_np = np.asarray(frame_t)
                 if frame_np.ndim == 2:
                     frame_np = np.repeat(frame_np[..., None], 3, axis=-1)
@@ -713,7 +730,16 @@ def _render_video_from_rollout(
             tempfile.gettempdir(),
             f"ph1_eval_{os.getpid()}_{np.random.randint(0, 1_000_000)}.gif",
         )
-        imageio.mimsave(out_path, frames_np, format="GIF", duration=0.25, loop=0)
+        pil_frames = [Image.fromarray(frame) for frame in frames_np]
+        pil_frames[0].save(
+            out_path,
+            save_all=True,
+            append_images=pil_frames[1:],
+            loop=0,
+            duration=250,
+            optimize=False,
+            disposal=2,
+        )
         return out_path, is_static, ""
     except Exception as e:
         return None, False, f"{type(e).__name__}: {e}"
@@ -763,10 +789,18 @@ def run_ph1_online_eval(
     env_cfg = copy.deepcopy(config["env"]) if "env" in config else {}
     env_kwargs = copy.deepcopy(env_cfg.get("ENV_KWARGS", {}))
     layout = env_kwargs.pop("layout")
+    old_overcooked, disable_old_auto = resolve_old_overcooked_flags(config)
 
     # Eval env uses training-time observation setting (e.g., agent_view_size=2)
-    env = OvercookedV2(layout=layout, **env_kwargs)
-    agent0_pos_channel, agent1_pos_channel = _get_agent_pos_channels_from_env(env)
+    env, env_name, _resolved_kwargs = make_eval_env(
+        layout,
+        env_kwargs,
+        old_overcooked=old_overcooked,
+        disable_auto=disable_old_auto,
+    )
+    agent0_pos_channel, agent1_pos_channel = _get_agent_pos_channels_from_env(
+        env, env_name=env_name
+    )
 
     stochastic = bool(config.get("PH1_EVAL_STOCHASTIC", False))
     policy = PPOPolicy(params=params, config=config, stochastic=stochastic)
@@ -779,8 +813,9 @@ def run_ph1_online_eval(
     try:
         key, key_r = jax.random.split(key)
         _, rand_state = env.reset(key_r)
-        # get_obs_default는 full observation을 반환하므로 tilde{s}는 full 기준 유지
-        random_tilde = np.array(env.get_obs_default(rand_state)[0]).astype(np.float32)
+        random_tilde = np.array(
+            extract_global_full_obs(env, rand_state, env_name)
+        ).astype(np.float32)
     except Exception:
         random_tilde = None
 
@@ -890,6 +925,7 @@ def run_ph1_online_eval(
                             _compute_rollout_distance_to_target_emb(
                                 rollout=rollout,
                                 env=env,
+                                env_name=env_name,
                                 policy=policy,
                                 target_emb=recent_target_emb,
                             )
@@ -899,6 +935,7 @@ def run_ph1_online_eval(
                             _compute_rollout_distance_to_target_emb(
                                 rollout=rollout,
                                 env=env,
+                                env_name=env_name,
                                 policy=policy,
                                 target_emb=random_target_emb,
                             )
@@ -914,6 +951,7 @@ def run_ph1_online_eval(
                         env_kwargs,
                         max_steps=eval_viz_max_steps,
                         force_full_view=eval_force_full_view,
+                        env_name=env_name,
                     )
                     if video_path is not None:
                         mode_video = video_path

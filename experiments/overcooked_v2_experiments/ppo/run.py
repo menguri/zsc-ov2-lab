@@ -49,7 +49,7 @@ def load_fcp_populations(population_dir: Path):
         """
         all_checkpoints, fcp_config, _ = load_all_checkpoints(
             dir,
-            final_only=True,
+            final_only=False,
             skip_initial=True,   # 원본과 동일 동작. 필요하면 False로 바꿔도 됨.
         )
 
@@ -267,4 +267,3 @@ def single_run(config):
                 out = jax.vmap(train_wrapper_jit)(rngs)
 
         return out
-

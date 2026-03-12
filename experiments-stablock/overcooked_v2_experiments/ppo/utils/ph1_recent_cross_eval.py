@@ -9,10 +9,13 @@ from typing import Dict, List, Optional
 import jax
 import numpy as np
 from PIL import Image
-from jaxmarl.environments.overcooked_v2.overcooked import OvercookedV2
 
 from overcooked_v2_experiments.eval.evaluate import eval_pairing
 from overcooked_v2_experiments.eval.policy import PolicyPairing
+from overcooked_v2_experiments.eval.utils import (
+    make_eval_env,
+    resolve_old_overcooked_flags,
+)
 from overcooked_v2_experiments.helper.plots import visualize_cross_play_matrix
 from overcooked_v2_experiments.ppo.ph1_online_eval import (
     _extract_tilde_agent_pos,
@@ -21,7 +24,7 @@ from overcooked_v2_experiments.ppo.ph1_online_eval import (
 from overcooked_v2_experiments.ppo.policy import PPOPolicy
 from overcooked_v2_experiments.ppo.utils.store import load_all_checkpoints
 
-PH1_FIXED_EVAL_STEPS = 400
+PH1_DEFAULT_EVAL_STEPS = 400
 
 
 def _get_stablock(cfg: Dict) -> bool:
@@ -174,13 +177,15 @@ def _annotation_prefix(sample_idx: int, step: int, ego_pos, par_pos) -> str:
     )
 
 
-def _save_gif_fixed_400(frame_seq: np.ndarray, out_path: Path) -> None:
-    """Save GIF and require exactly 400 evaluated frames."""
+def _save_gif_with_expected_steps(
+    frame_seq: np.ndarray, out_path: Path, expected_steps: int
+) -> None:
+    """Save GIF and require exactly expected_steps evaluated frames."""
     frames = np.asarray(frame_seq)
     if frames.ndim != 4 or frames.shape[0] == 0:
         raise ValueError(f"Invalid frame_seq shape for gif export: {frames.shape}")
 
-    target_frames = PH1_FIXED_EVAL_STEPS
+    target_frames = int(expected_steps)
     frame_count = int(frames.shape[0])
     if frame_count != target_frames:
         raise RuntimeError(
@@ -215,6 +220,9 @@ def run_ph1_recent_cross_eval(
     no_reset: bool,
     pairing_policy: Optional[int],
     policy_source: str,
+    max_steps: int = PH1_DEFAULT_EVAL_STEPS,
+    old_overcooked_override: Optional[bool] = None,
+    disable_old_overcooked_auto_override: Optional[bool] = None,
 ):
     all_params, config, configs = load_all_checkpoints(
         run_base_dir,
@@ -228,22 +236,42 @@ def run_ph1_recent_cross_eval(
 
     initial_env_kwargs = copy.deepcopy(config["env"]["ENV_KWARGS"])
     env_kwargs = dict(initial_env_kwargs)
-    if int(env_kwargs.get("max_steps", PH1_FIXED_EVAL_STEPS)) != PH1_FIXED_EVAL_STEPS:
+    cfg_old_overcooked, cfg_disable_old_auto = resolve_old_overcooked_flags(config)
+    if old_overcooked_override is not None:
+        cfg_old_overcooked = bool(old_overcooked_override)
+    if disable_old_overcooked_auto_override is not None:
+        cfg_disable_old_auto = bool(disable_old_overcooked_auto_override)
+
+    target_steps = int(max_steps)
+    if target_steps <= 0:
+        raise ValueError("max_steps must be >= 1")
+
+    if int(env_kwargs.get("max_steps", target_steps)) != target_steps:
         print(
-            f"[PH1-RECENT-XP] override max_steps {int(env_kwargs.get('max_steps'))} -> {PH1_FIXED_EVAL_STEPS}",
+            f"[PH1-RECENT-XP] override max_steps {int(env_kwargs.get('max_steps'))} -> {target_steps}",
             flush=True,
         )
-    env_kwargs["max_steps"] = int(PH1_FIXED_EVAL_STEPS)
+    env_kwargs["max_steps"] = target_steps
     if no_reset:
         env_kwargs["random_reset"] = False
         env_kwargs["op_ingredient_permutations"] = False
 
-    env = OvercookedV2(**env_kwargs)
+    env_layout = env_kwargs.get("layout")
+    env_kwargs_no_layout = copy.deepcopy(env_kwargs)
+    env_kwargs_no_layout.pop("layout", None)
+    env, env_name, _resolved_kwargs = make_eval_env(
+        env_layout,
+        env_kwargs_no_layout,
+        old_overcooked=cfg_old_overcooked,
+        disable_auto=cfg_disable_old_auto,
+    )
     num_actors = env.num_agents
     if num_actors != 2:
         raise RuntimeError(f"PH1 recent-tilde cross eval currently expects 2 agents, got {num_actors}")
 
-    agent0_pos_channel, agent1_pos_channel = _get_agent_pos_channels_from_env(env)
+    agent0_pos_channel, agent1_pos_channel = _get_agent_pos_channels_from_env(
+        env, env_name=env_name
+    )
 
     recent_pool = _collect_recent_tildes(run_base_dir)
     sampled_tildes = _sample_recent_tildes(recent_pool, num_recent_tildes, seed)
@@ -257,8 +285,7 @@ def run_ph1_recent_cross_eval(
 
     policy_pairings = [all_params[run_keys[i]]["ckpt_final"] for i in range(num_runs)]
 
-    env_kwargs_no_layout = copy.deepcopy(env_kwargs)
-    layout_name = env_kwargs_no_layout.pop("layout")
+    layout_name = env_layout
 
     results_structure = {"cross": {}}
     key = jax.random.PRNGKey(seed)
@@ -320,6 +347,8 @@ def run_ph1_recent_cross_eval(
                 latent_analysis=False,
                 value_analysis=False,
                 ph1_forced_tilde_state=tilde_state,
+                old_overcooked=cfg_old_overcooked,
+                disable_old_overcooked_auto=cfg_disable_old_auto,
             )
 
             for annotation, viz in eval_runs.items():
@@ -344,7 +373,7 @@ def run_ph1_recent_cross_eval(
                     viz_dir = run_base_dir / first_level / second_level
                     os.makedirs(viz_dir, exist_ok=True)
                     viz_filename = viz_dir / f"{annotation}.gif"
-                    _save_gif_fixed_400(frame_seq, viz_filename)
+                    _save_gif_with_expected_steps(frame_seq, viz_filename, target_steps)
 
                 checkpoint_sum += total_reward
                 row = [first_level, second_level, annotation, total_reward]
@@ -409,6 +438,9 @@ def main():
         default="params",
         choices=["params", "ind", "spec"],
     )
+    parser.add_argument("--old_overcooked", action="store_true")
+    parser.add_argument("--disable_old_overcooked_auto", action="store_true")
+    parser.add_argument("--max_steps", type=int, default=PH1_DEFAULT_EVAL_STEPS)
 
     args = parser.parse_args()
 
@@ -425,6 +457,9 @@ def main():
         no_reset=bool(args.no_reset),
         pairing_policy=args.pairing_policy,
         policy_source=args.policy_source,
+        max_steps=int(args.max_steps),
+        old_overcooked_override=bool(args.old_overcooked),
+        disable_old_overcooked_auto_override=bool(args.disable_old_overcooked_auto),
     )
 
 

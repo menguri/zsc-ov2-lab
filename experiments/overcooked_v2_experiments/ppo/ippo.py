@@ -24,6 +24,7 @@ import pickle
 from models.rnn import ScannedRNN
 import matplotlib.pyplot as plt
 from jaxmarl.environments.overcooked_v2.overcooked import ObservationType
+from jaxmarl.environments.overcooked.layouts import overcooked_layouts
 from overcooked_v2_experiments.eval.policy import AbstractPolicy
 from overcooked_v2_experiments.ppo.models.abstract import ActorCriticBase
 from .models.model import get_actor_critic, initialize_carry
@@ -58,6 +59,60 @@ def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
     return {a: x[i] for i, a in enumerate(agent_list)}
 
 
+def _should_use_old_overcooked(config: Dict[str, Any], env_config: Dict[str, Any]):
+    # SA(state augmentation)는 기존 OvercookedV2 경로를 유지한다.
+    if "NUM_ITERATIONS" in config:
+        return False, "state_augmentation"
+
+    explicit_old = bool(config.get("OLD_OVERCOOKED", False))
+    if explicit_old:
+        return True, "explicit_flag"
+
+    if bool(config.get("DISABLE_OLD_OVERCOOKED_AUTO", False)):
+        return False, "auto_disabled"
+
+    layout_name = env_config.get("ENV_KWARGS", {}).get("layout", None)
+    if isinstance(layout_name, str) and layout_name in overcooked_layouts:
+        return True, "auto_layout_match"
+
+    return False, "default_v2"
+
+
+def _prepare_env_spec(config: Dict[str, Any], env_config: Dict[str, Any]):
+    env_name = str(env_config.get("ENV_NAME", "overcooked_v2"))
+    env_kwargs = dict(env_config.get("ENV_KWARGS", {}))
+
+    use_old, reason = _should_use_old_overcooked(config, env_config)
+    if use_old:
+        if env_name != "overcooked":
+            print(
+                f"[ENV] Routing to overcooked(v1) ({reason}); "
+                f"ignoring ENV_NAME='{env_name}'."
+            )
+        env_name = "overcooked"
+
+    if env_name == "overcooked":
+        allowed = {"layout", "random_reset", "max_steps"}
+        dropped = sorted(set(env_kwargs.keys()) - allowed)
+        if dropped:
+            print(
+                "[ENV] overcooked(v1) selected; dropping OV2-only kwargs:",
+                ", ".join(dropped),
+            )
+            env_kwargs = {k: v for k, v in env_kwargs.items() if k in allowed}
+
+        layout_name = env_kwargs.get("layout", "cramped_room")
+        if isinstance(layout_name, str):
+            if layout_name not in overcooked_layouts:
+                raise ValueError(
+                    f"Unknown overcooked(v1) layout '{layout_name}'. "
+                    f"Available: {sorted(overcooked_layouts.keys())}"
+                )
+            env_kwargs["layout"] = overcooked_layouts[layout_name]
+
+    return env_name, env_kwargs
+
+
 def make_train(
     config,
     update_step_offset=None,
@@ -72,6 +127,8 @@ def make_train(
     e3t_epsilon = config.get("E3T_EPSILON", 0.05)
     use_partner_modeling = config.get("USE_PARTNER_MODELING", True)
 
+    env_name, env_kwargs = _prepare_env_spec(config, env_config)
+
     # Optional device selection for environment to mitigate GPU OOM.
     # Usage via Hydra override: +ENV_DEVICE=cpu  (default: gpu / auto)
     env_device = config.get("ENV_DEVICE", None)  # None -> default placement
@@ -81,9 +138,9 @@ def make_train(
     # Create env under a device context so large static buffers (layout grids etc.) live on CPU when requested.
     if env_device == "cpu":
         with jax.default_device(jax.devices("cpu")[0]):
-            env = jaxmarl.make(env_config["ENV_NAME"], **env_config["ENV_KWARGS"])
+            env = jaxmarl.make(env_name, **env_kwargs)
     else:
-        env = jaxmarl.make(env_config["ENV_NAME"], **env_config["ENV_KWARGS"])
+        env = jaxmarl.make(env_name, **env_kwargs)
 
     ACTION_DIM = env.action_space(env.agents[0]).n
 
@@ -121,7 +178,10 @@ def make_train(
             params,
         )
 
-    env = OvercookedV2LogWrapper(env, replace_info=False)
+    if env_name == "overcooked_v2":
+        env = OvercookedV2LogWrapper(env, replace_info=False)
+    else:
+        env = LogWrapper(env, replace_info=False)
 
     # Wrap reset/step with backend-specific jits if ENV_DEVICE explicitly set.
     reset_fn = env.reset
@@ -226,6 +286,18 @@ def make_train(
 
         jax.debug.print("original_seed {s}", s=rng)
 
+        # INIT ENV (use runtime observation shape as the training input contract)
+        rng, _rng = jax.random.split(rng)
+        reset_rng = jax.random.split(_rng, model_config["NUM_ENVS"])
+        obsv, env_state = jax.vmap(reset_fn)(reset_rng)
+        state_shape = obsv[env.agents[0]].shape[1:]
+        obs_space_shape = env.observation_space().shape
+        if tuple(state_shape) != tuple(obs_space_shape):
+            print(
+                f"[ENV][WARN] observation_space.shape={obs_space_shape} "
+                f"!= reset obs shape={state_shape}; using reset obs shape."
+            )
+
         # INIT NETWORK
         network = get_actor_critic(config)
 
@@ -233,7 +305,7 @@ def make_train(
 
         init_x = (
             jnp.zeros(
-                (1, model_config["NUM_ENVS"], *env.observation_space().shape),
+                (1, model_config["NUM_ENVS"], *state_shape),
             ),
             jnp.zeros((1, model_config["NUM_ENVS"])),
         )
@@ -257,7 +329,7 @@ def make_train(
              # Shape: (Time=1, Batch=NUM_ENVS, ActionDim=6)
              dummy_partner_prediction = jnp.zeros((1, model_config["NUM_ENVS"], ACTION_DIM))
              # Shape: (1, Batch, Context=5, H, W, C)
-             dummy_obs_hist = jnp.zeros((1, model_config["NUM_ENVS"], 5, *env.observation_space().shape))
+             dummy_obs_hist = jnp.zeros((1, model_config["NUM_ENVS"], 5, *state_shape))
              dummy_act_hist = jnp.zeros((1, model_config["NUM_ENVS"], 5), dtype=jnp.int32)
 
         # Single Init: Initialize all parameters at once to avoid collision
@@ -291,10 +363,6 @@ def make_train(
         if initial_train_state is not None:
             train_state = initial_train_state
 
-        # INIT ENV
-        rng, _rng = jax.random.split(rng)
-        reset_rng = jax.random.split(_rng, model_config["NUM_ENVS"])
-        obsv, env_state = jax.vmap(reset_fn)(reset_rng)
         init_hstate = initialize_carry(config, model_config["NUM_ACTORS"])
         # jax.debug.print("check2 {x}", x=init_hstate.flatten()[0])
 
@@ -419,7 +487,7 @@ def make_train(
                 rng, _rng = jax.random.split(rng)
 
                 obs_batch = jnp.stack([last_obs[a] for a in env.agents]).reshape(
-                    -1, *env.observation_space().shape
+                    -1, *state_shape
                 )
                 if cast_obs_bf16:
                     obs_batch = obs_batch.astype(jnp.bfloat16)
@@ -782,7 +850,7 @@ def make_train(
 
             # CALCULATE ADVANTAGE
             last_obs_batch = jnp.stack([last_obs[a] for a in env.agents]).reshape(
-                -1, *env.observation_space().shape
+                -1, *state_shape
             )
             if cast_obs_bf16:
                 last_obs_batch = last_obs_batch.astype(jnp.bfloat16)
@@ -1250,7 +1318,7 @@ def make_train(
         rng, _rng = jax.random.split(rng)
 
         # E3T History Buffers
-        initial_obs_history = jnp.zeros((model_config["NUM_ACTORS"], 5, *env.observation_space().shape))
+        initial_obs_history = jnp.zeros((model_config["NUM_ACTORS"], 5, *state_shape))
         initial_act_history = jnp.zeros((model_config["NUM_ACTORS"], 5), dtype=jnp.int32)
         initial_last_partner_action = jnp.zeros((model_config["NUM_ACTORS"],), dtype=jnp.int32)
         initial_last_action = jnp.zeros((model_config["NUM_ACTORS"],), dtype=jnp.int32)

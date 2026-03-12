@@ -47,6 +47,10 @@ def state_sample_run(config):
     print("Running state sample run")
 
     config = OmegaConf.to_container(config)
+    # SA 경로는 현재 OvercookedV2 전용(initial_state_buffer 의존)이므로
+    # old_overcooked 라우팅 신호가 들어와도 OV2로 고정한다.
+    config["OLD_OVERCOOKED"] = False
+    config["DISABLE_OLD_OVERCOOKED_AUTO"] = True
 
     num_seeds = config["NUM_SEEDS"]
     num_checkpoints = config["NUM_CHECKPOINTS"]
@@ -136,15 +140,25 @@ def state_sample_run(config):
 
             network = get_actor_critic(config)
 
+            key_obs, key_init = jax.random.split(key)
+            obs_sample, _ = env.reset(key_obs)
+            state_shape = obs_sample[env.agents[0]].shape
+            obs_space_shape = env.observation_space().shape
+            if tuple(state_shape) != tuple(obs_space_shape):
+                print(
+                    f"[ENV][WARN] observation_space.shape={obs_space_shape} "
+                    f"!= reset obs shape={state_shape}; using reset obs shape."
+                )
+
             init_x = (
                 jnp.zeros(
-                    (1, model_config["NUM_ENVS"], *env.observation_space().shape),
+                    (1, model_config["NUM_ENVS"], *state_shape),
                 ),
                 jnp.zeros((1, model_config["NUM_ENVS"])),
             )
             init_hstate = initialize_carry(config, model_config["NUM_ENVS"])
 
-            network_params = network.init(key, init_hstate, init_x)
+            network_params = network.init(key_init, init_hstate, init_x)
 
             return network_params
 

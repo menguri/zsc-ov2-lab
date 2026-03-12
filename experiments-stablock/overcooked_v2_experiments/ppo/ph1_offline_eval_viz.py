@@ -11,6 +11,11 @@ import numpy as np
 
 from overcooked_v2_experiments.eval.policy import PolicyPairing
 from overcooked_v2_experiments.eval.rollout import get_rollout
+from overcooked_v2_experiments.eval.utils import (
+    extract_global_full_obs,
+    make_eval_env,
+    resolve_old_overcooked_flags,
+)
 from overcooked_v2_experiments.ppo.ph1_online_eval import (
     _extract_tilde_agent_pos,
     _get_agent_pos_channels_from_env,
@@ -222,10 +227,16 @@ def main():
             print(f"[PH1-EVAL-VIZ][WARN] invalid env config run_{int(run_key)}: {type(e).__name__}: {e}")
             continue
 
-        from jaxmarl.environments.overcooked_v2.overcooked import OvercookedV2
-
-        env = OvercookedV2(layout=layout, **env_kwargs)
-        agent0_pos_channel, agent1_pos_channel = _get_agent_pos_channels_from_env(env)
+        old_overcooked, disable_old_auto = resolve_old_overcooked_flags(config)
+        env, env_name, _resolved_kwargs = make_eval_env(
+            layout,
+            env_kwargs,
+            old_overcooked=old_overcooked,
+            disable_auto=disable_old_auto,
+        )
+        agent0_pos_channel, agent1_pos_channel = _get_agent_pos_channels_from_env(
+            env, env_name=env_name
+        )
         config["EVAL_ENV_DEVICE"] = env_device
 
         stochastic = bool(config.get("PH1_EVAL_STOCHASTIC", False))
@@ -238,14 +249,18 @@ def main():
             try:
                 key_r = jax.random.PRNGKey(seed + int(run_key) * 17 + 1)
                 _, st = env.reset(key_r)
-                recent_tilde = np.asarray(env.get_obs_default(st)[0]).astype(np.float32)
+                recent_tilde = np.asarray(
+                    extract_global_full_obs(env, st, env_name)
+                ).astype(np.float32)
             except Exception:
                 recent_tilde = None
         if random_tilde is None:
             try:
                 key_q = jax.random.PRNGKey(seed + int(run_key) * 17 + 2)
                 _, st = env.reset(key_q)
-                random_tilde = np.asarray(env.get_obs_default(st)[0]).astype(np.float32)
+                random_tilde = np.asarray(
+                    extract_global_full_obs(env, st, env_name)
+                ).astype(np.float32)
             except Exception:
                 random_tilde = None
 
@@ -279,6 +294,7 @@ def main():
                     env_kwargs,
                     max_steps=int(viz_steps),
                     force_full_view=False,
+                    env_name=env_name,
                 )
                 if temp_video is None:
                     print(

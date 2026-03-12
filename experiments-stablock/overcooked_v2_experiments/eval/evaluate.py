@@ -13,12 +13,10 @@ from datetime import datetime
 from pathlib import Path
 import chex
 import imageio
-from jaxmarl.viz.overcooked_v2_visualizer import OvercookedV2Visualizer
 import csv
 
 from jaxmarl.environments.overcooked_v2.layouts import overcooked_v2_layouts
 from jaxmarl.environments.overcooked_v2.overcooked import OvercookedV2
-from jaxmarl.viz.overcooked_v2_visualizer import OvercookedV2Visualizer
 
 DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(DIR))
@@ -26,7 +24,12 @@ sys.path.append(os.path.dirname(os.path.dirname(DIR)))
 
 from .policy import AbstractPolicy, PolicyPairing
 from .rollout import get_rollout
-from .utils import get_recipe_identifier
+from .utils import (
+    get_recipe_identifier,
+    make_eval_env,
+    render_state_frame,
+    resolve_eval_engine,
+)
 from overcooked_v2_experiments.ppo.utils.stablock import enumerate_reachable_positions
 
 
@@ -53,6 +56,8 @@ def visualize_pairing(
     latent_analysis=False,
     value_analysis=False,
     ph1_forced_tilde_state=None,
+    old_overcooked=False,
+    disable_old_overcooked_auto=False,
 ):
     runs = eval_pairing(
         policies,
@@ -67,6 +72,8 @@ def visualize_pairing(
         latent_analysis=latent_analysis,
         value_analysis=value_analysis,
         ph1_forced_tilde_state=ph1_forced_tilde_state,
+        old_overcooked=old_overcooked,
+        disable_old_overcooked_auto=disable_old_overcooked_auto,
     )
 
     reward_sum = 0.0
@@ -152,6 +159,8 @@ def eval_pairing(
     latent_analysis=False,
     value_analysis=False,
     ph1_forced_tilde_state=None,
+    old_overcooked=False,
+    disable_old_overcooked_auto=False,
 ):
     assert not (
         all_recipes and num_seeds is not None
@@ -161,9 +170,22 @@ def eval_pairing(
     value_rows_by_annotation = {}
 
     env_kwargs = copy.deepcopy(env_kwargs)
+    engine_name, _resolved_probe_kwargs = resolve_eval_engine(
+        layout_name,
+        env_kwargs,
+        old_overcooked=old_overcooked,
+        disable_auto=disable_old_overcooked_auto,
+    )
 
     if value_analysis:
-        env = OvercookedV2(layout=layout_name, **env_kwargs)
+        if engine_name == "overcooked":
+            raise ValueError("value_analysis is only supported with overcooked_v2 engine")
+        env, _engine_name, _resolved_kwargs = make_eval_env(
+            layout_name,
+            env_kwargs,
+            old_overcooked=old_overcooked,
+            disable_auto=disable_old_overcooked_auto,
+        )
 
         key, key_init = jax.random.split(key)
         _, state = env.reset(key_init)
@@ -227,7 +249,14 @@ def eval_pairing(
         value_rows_by_annotation[annotations[0]] = rows
 
     elif latent_analysis:
-        env = OvercookedV2(layout=layout_name, **env_kwargs)
+        if engine_name == "overcooked":
+            raise ValueError("latent_analysis is only supported with overcooked_v2 engine")
+        env, _engine_name, _resolved_kwargs = make_eval_env(
+            layout_name,
+            env_kwargs,
+            old_overcooked=old_overcooked,
+            disable_auto=disable_old_overcooked_auto,
+        )
 
         key, key_init = jax.random.split(key)
         _, state = env.reset(key_init)
@@ -296,6 +325,8 @@ def eval_pairing(
             value_rows_by_annotation[annotations[i]] = rows
 
     elif all_recipes:
+        if engine_name == "overcooked":
+            raise ValueError("all_recipes evaluation is not supported with overcooked(v1) engine")
         layout = overcooked_v2_layouts[layout_name]
         env_kwargs.pop("layout")
 
@@ -323,7 +354,12 @@ def eval_pairing(
         ]
 
     else:
-        env = OvercookedV2(layout=layout_name, **env_kwargs)
+        env, engine_name, _resolved_kwargs = make_eval_env(
+            layout_name,
+            env_kwargs,
+            old_overcooked=old_overcooked,
+            disable_auto=disable_old_overcooked_auto,
+        )
 
         def _rollout_seed_body(carry, key):
             rollout = get_rollout(
@@ -346,7 +382,6 @@ def eval_pairing(
         frame_seqs = [None] * len(annotations)
     else:
         agent_view_size = env_kwargs.get("agent_view_size", None)
-        viz = OvercookedV2Visualizer()
         
         # 완전히 순차적으로 처리하여 메모리 문제 해결
         frame_seqs = []
@@ -359,7 +394,8 @@ def eval_pairing(
             num_steps = jax.tree_util.tree_leaves(state_seq_i)[0].shape[0]
             for t in range(num_steps):
                 state_t = jax.tree_util.tree_map(lambda x: x[t], state_seq_i)
-                frame = viz._render_state(state_t, agent_view_size)
+                render_engine = "overcooked_v2" if all_recipes else engine_name
+                frame = render_state_frame(state_t, render_engine, agent_view_size)
                 # GPU 메모리에서 CPU로 즉시 전송하여 메모리 절약
                 frames.append(np.array(frame))
             

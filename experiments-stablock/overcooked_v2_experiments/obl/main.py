@@ -119,6 +119,18 @@ def make_train(config):
     )
 
     def train(rng):
+        # INIT ENV (use runtime observation shape as the training input contract)
+        rng, _rng = jax.random.split(rng)
+        reset_rng = jax.random.split(_rng, model_config["NUM_ENVS"])
+        obsv, env_state = jax.vmap(env.reset)(reset_rng)
+        state_shape = obsv[env.agents[0]].shape[1:]
+        obs_space_shape = env.observation_space().shape
+        if tuple(state_shape) != tuple(obs_space_shape):
+            print(
+                f"[ENV][WARN] observation_space.shape={obs_space_shape} "
+                f"!= reset obs shape={state_shape}; using reset obs shape."
+            )
+
         # INIT NETWORK
         network = get_actor_critic(config, env)
 
@@ -126,7 +138,7 @@ def make_train(config):
 
         init_x = (
             jnp.zeros(
-                (1, model_config["NUM_ENVS"], *env.observation_space().shape),
+                (1, model_config["NUM_ENVS"], *state_shape),
             ),
             jnp.zeros((1, model_config["NUM_ENVS"])),
         )
@@ -146,10 +158,6 @@ def make_train(config):
             tx=tx,
         )
 
-        # INIT ENV
-        rng, _rng = jax.random.split(rng)
-        reset_rng = jax.random.split(_rng, model_config["NUM_ENVS"])
-        obsv, env_state = jax.vmap(env.reset)(reset_rng)
         init_hstate = initialize_carry(config, model_config["NUM_ACTORS"])
 
         # TRAIN LOOP
@@ -171,7 +179,7 @@ def make_train(config):
                 rng, _rng = jax.random.split(rng)
 
                 obs_batch = jnp.stack([last_obs[a] for a in env.agents]).reshape(
-                    -1, *env.observation_space().shape
+                    -1, *state_shape
                 )
 
                 ac_in = (
@@ -260,7 +268,7 @@ def make_train(config):
                 rng,
             ) = runner_state
             last_obs_batch = jnp.stack([last_obs[a] for a in env.agents]).reshape(
-                -1, *env.observation_space().shape
+                -1, *state_shape
             )
             ac_in = (
                 last_obs_batch[np.newaxis, :],

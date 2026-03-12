@@ -9,6 +9,20 @@ EXP="rnn-sp"
 ENV_DEVICE="cpu"
 NENVS=256
 NSTEPS=256
+OLD_OVERCOOKED=1
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --old-overcooked)
+            OLD_OVERCOOKED=1
+            shift
+            ;;
+        *)
+            echo "[WARN] Unknown arg: $1"
+            shift
+            ;;
+    esac
+done
 
 run_sp() {
     local gpus=$1
@@ -22,6 +36,10 @@ run_sp() {
         --env-device $ENV_DEVICE \
         --nenvs $NENVS \
         --nsteps $NSTEPS $extra"
+
+    if [[ "$OLD_OVERCOOKED" == "1" ]]; then
+        cmd="$cmd --old-overcooked"
+    fi
     if [ -n "$layout" ]; then
         cmd="$cmd --layout $layout"
     fi
@@ -42,7 +60,8 @@ run_sp() {
 # run_sp "5,6" "forced_coord" "" 
 # run_sp "1,2,4,5,6" "counter_circuit" "" 
 run_sp "5,6" "cramped_room" ""
-run_sp "5,6" "asymm_advantages" "" 
-run_sp "5,6" "coord_ring" "" 
-run_sp "5,6" "forced_coord" "" 
-run_sp "5,6" "counter_circuit" "" 
+wait
+# run_sp "5,6" "asymm_advantages" "" 
+# run_sp "5,6" "coord_ring" "" 
+# run_sp "5,6" "forced_coord" "" 
+# run_sp "5,6" "counter_circuit" "" 

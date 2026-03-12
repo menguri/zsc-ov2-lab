@@ -13,6 +13,20 @@ EXP="rnn-sa"
 ENV_DEVICE="cpu"
 NENVS=256
 NSTEPS=256
+OLD_OVERCOOKED=0
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --old-overcooked)
+            OLD_OVERCOOKED=1
+            shift
+            ;;
+        *)
+            echo "[WARN] Unknown arg: $1"
+            shift
+            ;;
+    esac
+done
 
 # SA Specific Settings
 ITERATIONS=10
@@ -37,6 +51,10 @@ run_sa() {
         --nenvs $NENVS \
         --nsteps $NSTEPS \
         --iterations $ITERATIONS"
+
+    if [[ "$OLD_OVERCOOKED" == "1" ]]; then
+        cmd="$cmd --old-overcooked"
+    fi
         
     if [ -n "$layout" ]; then
         cmd="$cmd --layout $layout"

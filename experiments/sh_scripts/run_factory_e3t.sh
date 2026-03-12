@@ -13,6 +13,20 @@ EXP="rnn-e3t"
 ENV_DEVICE="cpu"
 NENVS=64
 NSTEPS=256
+OLD_OVERCOOKED=1
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --old-overcooked)
+            OLD_OVERCOOKED=1
+            shift
+            ;;
+        *)
+            echo "[WARN] Unknown arg: $1"
+            shift
+            ;;
+    esac
+done
 
 # E3T Specific Settings
 EPSILON=0.3
@@ -42,6 +56,10 @@ run_e3t() {
         --use-partner-modeling $USE_PM \
         --pred-loss-coef $PRED_COEF \
         --tags e3t"
+
+    if [[ "$OLD_OVERCOOKED" == "1" ]]; then
+        cmd="$cmd --old-overcooked"
+    fi
         
     if [ -n "$layout" ]; then
         cmd="$cmd --layout $layout"
@@ -81,16 +99,16 @@ run_e3t() {
 # run_e3t "5,6" "test_time_wide" ""
 
 # # 5. Cramped Room (Original)
-# run_e3t "5,6" "cramped_room" ""
+run_e3t "4,7" "cramped_room" ""
 
 # # 7. Coordination Ring (Original)
-# run_e3t "5,6" "coord_ring" ""
+run_e3t "4,7" "coord_ring" ""
 
 # # 8. Forced Coordination (Original)
-# run_e3t "5,6" "forced_coord" ""
+run_e3t "4,7" "forced_coord" ""
 
 # 9. Counter Circuit (Original)
-# run_e3t "5,6" "counter_circuit" ""
+run_e3t "4,7" "counter_circuit" ""
 
 # 6. Asymmetric Advantages (Original)
-run_e3t "5,6" "asymm_advantages" ""
+run_e3t "4,7" "asymm_advantages" ""

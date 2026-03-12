@@ -24,6 +24,7 @@ import pickle
 from models.rnn import ScannedRNN
 import matplotlib.pyplot as plt
 from jaxmarl.environments.overcooked_v2.overcooked import ObservationType
+from jaxmarl.environments.overcooked.layouts import overcooked_layouts
 from overcooked_v2_experiments.ppo.utils.stablock import (
     expand_blocked_states,
     initialize_blocked_states,
@@ -72,6 +73,60 @@ def batchify(x: dict, agent_list, num_actors):
 def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
     x = x.reshape((num_actors, num_envs, -1))
     return {a: x[i] for i, a in enumerate(agent_list)}
+
+
+def _should_use_old_overcooked(config: Dict[str, Any], env_config: Dict[str, Any]):
+    # SA(state augmentation)는 기존 OvercookedV2 경로를 유지한다.
+    if "NUM_ITERATIONS" in config:
+        return False, "state_augmentation"
+
+    explicit_old = bool(config.get("OLD_OVERCOOKED", False))
+    if explicit_old:
+        return True, "explicit_flag"
+
+    if bool(config.get("DISABLE_OLD_OVERCOOKED_AUTO", False)):
+        return False, "auto_disabled"
+
+    layout_name = env_config.get("ENV_KWARGS", {}).get("layout", None)
+    if isinstance(layout_name, str) and layout_name in overcooked_layouts:
+        return True, "auto_layout_match"
+
+    return False, "default_v2"
+
+
+def _prepare_env_spec(config: Dict[str, Any], env_config: Dict[str, Any]):
+    env_name = str(env_config.get("ENV_NAME", "overcooked_v2"))
+    env_kwargs = dict(env_config.get("ENV_KWARGS", {}))
+
+    use_old, reason = _should_use_old_overcooked(config, env_config)
+    if use_old:
+        if env_name != "overcooked":
+            print(
+                f"[ENV] Routing to overcooked(v1) ({reason}); "
+                f"ignoring ENV_NAME='{env_name}'."
+            )
+        env_name = "overcooked"
+
+    if env_name == "overcooked":
+        allowed = {"layout", "random_reset", "max_steps"}
+        dropped = sorted(set(env_kwargs.keys()) - allowed)
+        if dropped:
+            print(
+                "[ENV] overcooked(v1) selected; dropping OV2-only kwargs:",
+                ", ".join(dropped),
+            )
+            env_kwargs = {k: v for k, v in env_kwargs.items() if k in allowed}
+
+        layout_name = env_kwargs.get("layout", "cramped_room")
+        if isinstance(layout_name, str):
+            if layout_name not in overcooked_layouts:
+                raise ValueError(
+                    f"Unknown overcooked(v1) layout '{layout_name}'. "
+                    f"Available: {sorted(overcooked_layouts.keys())}"
+                )
+            env_kwargs["layout"] = overcooked_layouts[layout_name]
+
+    return env_name, env_kwargs
 
 
 def make_train(
@@ -144,6 +199,13 @@ def make_train(
     stablock_enabled = bool(config.get("STABLOCK_ENABLED", False))
     stablock_heavy_penalty = float(config.get("STABLOCK_HEAVY_PENALTY", 10.0))
     stablock_no_block_prob = config.get("STABLOCK_NO_BLOCK_PROB", None)
+    env_name, env_kwargs = _prepare_env_spec(config, env_config)
+    is_overcooked_v1 = env_name == "overcooked"
+    if is_overcooked_v1 and stablock_enabled:
+        raise ValueError(
+            "Stablock is implemented for overcooked_v2 state APIs. "
+            "Use overcooked_v2 engine for Stablock runs."
+        )
     # PH2 joint-match controls
     ph2_match_schedule = bool(config.get("PH2_MATCH_SCHEDULE", False))
     ph2_role = str(config.get("PH2_ROLE", "")).strip().lower()
@@ -163,9 +225,9 @@ def make_train(
     # Create env under a device context so large static buffers (layout grids etc.) live on CPU when requested.
     if env_device == "cpu":
         with jax.default_device(jax.devices("cpu")[0]):
-            env = jaxmarl.make(env_config["ENV_NAME"], **env_config["ENV_KWARGS"])
+            env = jaxmarl.make(env_name, **env_kwargs)
     else:
-        env = jaxmarl.make(env_config["ENV_NAME"], **env_config["ENV_KWARGS"])
+        env = jaxmarl.make(env_name, **env_kwargs)
 
     ACTION_DIM = env.action_space(env.agents[0]).n
     pred_z_dim = int(config.get("PRED_Z_DIM", max(1, int(model_config["GRU_HIDDEN_DIM"]) // 2)))
@@ -273,7 +335,26 @@ def make_train(
             params,
         )
 
-    env = OvercookedV2LogWrapper(env, replace_info=False)
+    if env_name == "overcooked_v2":
+        env = OvercookedV2LogWrapper(env, replace_info=False)
+    else:
+        env = LogWrapper(env, replace_info=False)
+
+    def _extract_pos_axes(log_env_state):
+        if is_overcooked_v1:
+            # overcooked(v1) batched state: (E, A, 2) -> convert to (A, E)
+            agent_pos = log_env_state.env_state.agent_pos
+            pos_x = jnp.swapaxes(agent_pos[..., 0], 0, 1)
+            pos_y = jnp.swapaxes(agent_pos[..., 1], 0, 1)
+            return pos_y, pos_x
+        return log_env_state.env_state.agents.pos.y, log_env_state.env_state.agents.pos.x
+
+    def _extract_global_full_obs(log_env_state):
+        if is_overcooked_v1:
+            full = jax.vmap(env.get_obs)(log_env_state.env_state)
+            return full[env.agents[0]].astype(jnp.float32)
+        full = jax.vmap(env.get_obs_default)(log_env_state.env_state)
+        return full[:, 0].astype(jnp.float32)
 
     # Wrap reset/step with backend-specific jits if ENV_DEVICE explicitly set.
     reset_fn = env.reset
@@ -390,11 +471,9 @@ def make_train(
         # (NUM_ENVS, H, W, C_obs)
         state_shape = obsv[env.agents[0]].shape[1:]
 
-        # PH1 blocked target shape: global full state with agent info
-        # Use get_obs_default(state) (unmasked) to construct global full tensors.
+        # PH1 blocked target shape: global full state with agent info.
         if ph1_enabled:
-            global_full = jax.vmap(env.get_obs_default)(env_state.env_state)  # (E, A, H, W, C_full)
-            global_full_env0 = global_full[:, 0].astype(jnp.float32)  # (E, H, W, C_full)
+            global_full_env0 = _extract_global_full_obs(env_state)  # (E, H, W, C_full)
             ph1_block_shape = global_full_env0.shape[1:]
         else:
             ph1_block_shape = None
@@ -485,6 +564,73 @@ def make_train(
                 optax.adam(model_config["LR"], eps=1e-5),
             )
 
+        def _maybe_attach_state_pred_params(train_state_in, rng_init):
+            """
+            Backward-compatible patch for old action-pred checkpoints:
+            ensure state-pred-only params (e.g. state_target_proj) exist.
+            """
+            if not state_prediction:
+                return train_state_in
+
+            params_tree = train_state_in.params
+            if not isinstance(params_tree, (dict, core.FrozenDict)):
+                return train_state_in
+
+            params_coll = params_tree.get("params", None)
+            if not isinstance(params_coll, (dict, core.FrozenDict)):
+                return train_state_in
+
+            if "state_target_proj" in params_coll:
+                return train_state_in
+
+            target_obs_dummy = jnp.zeros(
+                (model_config["NUM_ACTORS"], *state_shape),
+                dtype=jnp.float32,
+            )
+            target_vars = network.init(
+                rng_init,
+                target_obs_dummy,
+                method="encode_obs_to_pred_z",
+            )
+            target_params = target_vars.get("params", {})
+            if "state_target_proj" not in target_params:
+                return train_state_in
+
+            if isinstance(params_tree, core.FrozenDict):
+                mutable_tree = core.unfreeze(params_tree)
+            else:
+                mutable_tree = dict(params_tree)
+
+            existing_params = mutable_tree.get("params", {})
+            if isinstance(existing_params, core.FrozenDict):
+                existing_params = core.unfreeze(existing_params)
+            else:
+                existing_params = dict(existing_params)
+
+            added_param_keys = []
+            for k, v in target_params.items():
+                if k not in existing_params:
+                    existing_params[k] = v
+                    added_param_keys.append(k)
+
+            mutable_tree["params"] = existing_params
+            if isinstance(params_tree, core.FrozenDict):
+                merged_params = core.freeze(mutable_tree)
+            else:
+                merged_params = mutable_tree
+
+            rebuilt_state = TrainState.create(
+                apply_fn=train_state_in.apply_fn,
+                params=merged_params,
+                tx=tx,
+            )
+            rebuilt_state = rebuilt_state.replace(step=train_state_in.step)
+            print(
+                "[STATE_PRED_INIT] Added missing params:",
+                added_param_keys,
+            )
+            return rebuilt_state
+
         train_state = TrainState.create(
             apply_fn=network.apply,
             params=network_params,
@@ -493,6 +639,10 @@ def make_train(
 
         if initial_train_state is not None:
             train_state = initial_train_state
+
+        # Ensure state-pred-only params exist for both fresh init and resumed checkpoints.
+        rng, _rng = jax.random.split(rng)
+        train_state = _maybe_attach_state_pred_params(train_state, _rng)
 
         # INIT ENV state already created above
         init_hstate = initialize_carry(config, model_config["NUM_ACTORS"])
@@ -626,8 +776,7 @@ def make_train(
                 partner_actor_mask = ~is_ego
 
                 # [Stablock] partner 위치 계산 (env.num_agents == 2 가정)
-                pos_y = env_state.env_state.agents.pos.y
-                pos_x = env_state.env_state.agents.pos.x
+                pos_y, pos_x = _extract_pos_axes(env_state)
                 partner_idxs = (ego_idxs + 1) % env.num_agents
                 # 환경 인덱스를 생성하여 정확히 매칭 (128개의 환경에서 각각 지정된 파트너의 값 추출)
                 env_range = jnp.arange(model_config["NUM_ENVS"])
@@ -1195,8 +1344,7 @@ def make_train(
                 #  - latent distance penalty computation
                 global_full_next_env0 = None
                 if ph1_enabled:
-                    global_full_next = jax.vmap(env.get_obs_default)(env_state.env_state)  # (E, A, H, W, C_full)
-                    global_full_next_env0 = global_full_next[:, 0].astype(jnp.float32)  # (E, H, W, C_full)
+                    global_full_next_env0 = _extract_global_full_obs(env_state)  # (E, H, W, C_full)
 
                     # Update env-specific ring buffer pool: (E, Pool, H, W, C_full)
                     ph1_pool_states = jnp.roll(ph1_pool_states, shift=-1, axis=1)
@@ -1305,8 +1453,9 @@ def make_train(
                 
                 # [Stablock] 차단 좌표 도달 시 큰 음의 보상 적용 (partner만 유효)
                 if stablock_enabled:
-                    pos_y = jnp.squeeze(env_state.env_state.agents.pos.y)
-                    pos_x = jnp.squeeze(env_state.env_state.agents.pos.x)
+                    pos_y, pos_x = _extract_pos_axes(env_state)
+                    pos_y = jnp.squeeze(pos_y)
+                    pos_x = jnp.squeeze(pos_x)
                     pos = jnp.stack([pos_y, pos_x], axis=-1)
                     pos = jnp.swapaxes(pos, 0, 1).reshape(
                         model_config["NUM_ACTORS"], 2
@@ -2546,8 +2695,7 @@ def make_train(
             initial_ego_idxs = jax.random.randint(_rng, (model_config["NUM_ENVS"],), 0, env.num_agents)
 
             # [Stablock] 에피소드 시작 시 partner에게 부여할 차단 좌표 초기화
-            pos_y = env_state.env_state.agents.pos.y
-            pos_x = env_state.env_state.agents.pos.x
+            pos_y, pos_x = _extract_pos_axes(env_state)
             partner_idxs = (initial_ego_idxs + 1) % env.num_agents
             env_range = jnp.arange(model_config["NUM_ENVS"]) # 추가
             

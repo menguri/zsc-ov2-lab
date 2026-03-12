@@ -171,7 +171,8 @@ wandb/
 runs/
 
 download_dir
-fcp_populations
+fcp_populations/*
+!fcp_populations/.gitkeep
 layout_viz
 results
 
@@ -182,8 +183,9 @@ results
 overcooked_v2_experiments/human_rl/imitation/models
 overcooked_v2_experiments/human_rl/imitation/processed_data
 
-# Conda environment
-overcooked_v2/
+# Conda environment (root-local virtualenv only)
+/overcooked_v2/
+/overcookedv2/
 
 # CUDA repository
 *.deb
@@ -205,6 +207,12 @@ overcooked_v2/
 **/*.safetensors
 **/*.npz
 **/*.npy
+*.png
+*.gif
+
+# Keep training-required JaxMARL environment source/assets trackable.
+!JaxMARL/jaxmarl/environments/overcooked_v2/
+!JaxMARL/jaxmarl/environments/overcooked_v2/**
 
 # -----------------------------------------------------------------------------
 # Local experiment artifacts (do not commit)

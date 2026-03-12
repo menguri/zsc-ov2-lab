@@ -62,13 +62,37 @@ def single_run_with_viz(config):
         population_dir = Path(config["FCP"])
         run_name = f"fcp_{population_dir.name}_seed_{config['SEED']}"
 
+    wandb_cfg = config.get("wandb", {})
+    extra_tags = wandb_cfg.get("tags", [])
+    if isinstance(extra_tags, str):
+        extra_tags = [extra_tags]
+    elif not isinstance(extra_tags, (list, tuple)):
+        extra_tags = []
+
+    old_overcooked_enabled = bool(config.get("OLD_OVERCOOKED", False))
+    if isinstance(config.get("alg"), dict):
+        old_overcooked_enabled = old_overcooked_enabled or bool(
+            config["alg"].get("OLD_OVERCOOKED", False)
+        )
+    if old_overcooked_enabled and "old_overcooked" not in str(run_name).lower():
+        run_name = f"{run_name}_old_overcooked"
+    if old_overcooked_enabled:
+        extra_tags = list(extra_tags) + ["old_overcooked"]
+
+    wandb_tags = []
+    for tag in ["IPPO", model_name, "OvercookedV2", *extra_tags]:
+        tag_str = str(tag).strip()
+        if tag_str and tag_str not in wandb_tags:
+            wandb_tags.append(tag_str)
+
     print(f"[RUNDBG] run_name = {run_name}")
+    print(f"[RUNDBG] wandb_tags = {wandb_tags}")
     print("[RUNDBG] >>> wandb.init 진입 직전")
 
     with wandb.init(
         entity=config["wandb"]["ENTITY"],
         project=config["wandb"]["PROJECT"],
-        tags=["IPPO", model_name, "OvercookedV2"],
+        tags=wandb_tags,
         config=config,
         mode=config["wandb"]["WANDB_MODE"],
         name=run_name,

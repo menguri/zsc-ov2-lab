@@ -64,13 +64,17 @@ def init_rollout(policies: List[AbstractPolicy], env):
 def get_rollout(policies: PolicyPairing, env, key, algorithm="PPO") -> PolicyRollout:
     init_hstate, _get_actions = init_rollout(policies, env)
 
+    # Reset first and use runtime observation shape for history buffers.
+    key, key_r = jax.random.split(key, 2)
+    obs, state = env.reset(key_r)
+
     # obs_history 및 act_history 초기화 (E3T인 경우에만)
     init_obs_history = None
     init_act_history = None
     if algorithm == "E3T":
         # k=5라고 가정
         k = 5
-        obs_shape = env.observation_space().shape
+        obs_shape = obs["agent_0"].shape
         # obs_history는 각 에이전트에 대한 배열의 딕셔너리입니다
         init_obs_history = {
             f"agent_{i}": jnp.zeros((k, *obs_shape)) for i in range(env.num_agents)
@@ -178,9 +182,6 @@ def get_rollout(policies: PolicyPairing, env, key, algorithm="PPO") -> PolicyRol
 
         carry = (next_obs, next_state, next_done, new_total_reward, next_hstate, next_obs_history, next_act_history)
         return carry, (next_state, actions, prediction_correct, prediction_mask)
-
-    key, key_r = jax.random.split(key, 2)
-    obs, state = env.reset(key_r)
 
     init_done = {f"agent_{i}": False for i in range(env.num_agents)}
     init_done["__all__"] = False
