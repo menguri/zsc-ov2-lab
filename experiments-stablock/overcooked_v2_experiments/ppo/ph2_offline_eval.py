@@ -13,6 +13,11 @@ import orbax.checkpoint as ocp
 
 from overcooked_v2_experiments.eval.policy import PolicyPairing
 from overcooked_v2_experiments.eval.rollout import get_rollout
+from overcooked_v2_experiments.eval.utils import (
+    extract_global_full_obs,
+    make_eval_env,
+    resolve_old_overcooked_flags,
+)
 from overcooked_v2_experiments.ppo.ph1_online_eval import (
     _render_video_from_rollout,
 )
@@ -302,9 +307,13 @@ def _evaluate_pair(
     env_cfg = dict(config.get("env", {}))
     env_kwargs = dict(env_cfg.get("ENV_KWARGS", {}))
     layout = env_kwargs.pop("layout")
-    from jaxmarl.environments.overcooked_v2.overcooked import OvercookedV2
-
-    env = OvercookedV2(layout=layout, **env_kwargs)
+    old_overcooked, disable_old_auto = resolve_old_overcooked_flags(config)
+    env, env_name, _resolved_kwargs = make_eval_env(
+        layout,
+        env_kwargs,
+        old_overcooked=old_overcooked,
+        disable_auto=disable_old_auto,
+    )
 
     recent_tilde = mode_tildes.get("recent")
     random_tilde = mode_tildes.get("random")
@@ -312,14 +321,18 @@ def _evaluate_pair(
         try:
             key_r = jax.random.PRNGKey(seed + step * 13 + 1)
             _, st = env.reset(key_r)
-            recent_tilde = np.asarray(env.get_obs_default(st)[0]).astype(np.float32)
+            recent_tilde = np.asarray(
+                extract_global_full_obs(env, st, env_name)
+            ).astype(np.float32)
         except Exception:
             recent_tilde = None
     if random_tilde is None:
         try:
             key_q = jax.random.PRNGKey(seed + step * 13 + 2)
             _, st = env.reset(key_q)
-            random_tilde = np.asarray(env.get_obs_default(st)[0]).astype(np.float32)
+            random_tilde = np.asarray(
+                extract_global_full_obs(env, st, env_name)
+            ).astype(np.float32)
         except Exception:
             random_tilde = None
 
@@ -360,6 +373,7 @@ def _evaluate_pair(
                 env_kwargs,
                 max_steps=int(viz_max_steps),
                 force_full_view=eval_force_full_view,
+                env_name=env_name,
             )
             if video_path is not None:
                 video_out_path = _save_pair_video(
@@ -403,9 +417,13 @@ def _evaluate_ind_ind(
     env_cfg = dict(config.get("env", {}))
     env_kwargs = dict(env_cfg.get("ENV_KWARGS", {}))
     layout = env_kwargs.pop("layout")
-    from jaxmarl.environments.overcooked_v2.overcooked import OvercookedV2
-
-    env = OvercookedV2(layout=layout, **env_kwargs)
+    old_overcooked, disable_old_auto = resolve_old_overcooked_flags(config)
+    env, env_name, _resolved_kwargs = make_eval_env(
+        layout,
+        env_kwargs,
+        old_overcooked=old_overcooked,
+        disable_auto=disable_old_auto,
+    )
     key = jax.random.PRNGKey(seed + step * 97)
     rollout = get_rollout(
         PolicyPairing(policy_ind, policy_ind),
@@ -427,6 +445,7 @@ def _evaluate_ind_ind(
             env_kwargs,
             max_steps=int(viz_max_steps),
             force_full_view=eval_force_full_view,
+            env_name=env_name,
         )
         if video_path is not None:
             video_out_path = _save_pair_video(

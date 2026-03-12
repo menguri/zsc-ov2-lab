@@ -24,6 +24,8 @@ AUTO_TO_RUN="20260303-192651_a0t7uvpt_grounded_coord_simple_e3t_ph2_ct1_e0p2_o20
 AUTO_GPU_IDX=0
 AUTO_BATCH_SIZE=1
 AUTO_PRESET_EVAL_MODE="cross-play" # cross-play | eval-analysis | eval-viz
+AUTO_MAX_STEPS=100
+AUTO_OLD_OVERCOOKED=1
 AUTO_PH1_CROSS_NUM_SEEDS=3
 AUTO_PH1_CROSS_NUM_RECENT_TILDES=10
 AUTO_PH2_CROSS_NUM_SEEDS=5
@@ -31,7 +33,7 @@ AUTO_PH2_CROSS_NUM_SEEDS=5
 # Optional manual fallback commands (used only when AUTO_DISCOVER_PRESETS=false).
 PRESET_FACTORY_COMMANDS=(
   # "./run_visualize.sh --gpu 4 --dir runs/20260309-064245_c9bl24w9_counter_circuit_e3t_ph2_e0p2_o10_s2 --cross --num_seeds 5"
-  "./run_visualize.sh --gpu 4 --dir runs/20260309-113734_xed1ab9r_counter_circuit_e3t_ph2_e0p2_o10_s2 --cross --num_seeds 5"
+  "./run_visualize.sh --gpu 6 --dir runs/20260310-103511_up8b4eeh_counter_circuit_e3t_ph2_e0p2_o10_s2 --cross --num_seeds 5"
   # "./run_visualize.sh --gpu 1 --dir runs/20260306-114435_zb151oi7_coord_ring_e3t_ph2_ct0_e0p2_o10_s2 --cross --num_seeds 5"
   # "./run_visualize.sh --gpu 2 --dir runs/20260306-160646_r5awqode_cramped_room_e3t_ph2_ct0_e0p2_o10_s2 --cross --num_seeds 5"
   # "./run_visualize.sh --gpu 3 --dir runs/20260306-201807_u99vy5ws_forced_coord_e3t_ph2_ct0_e0p2_o10_s2 --cross --num_seeds 5"
@@ -50,6 +52,9 @@ Factory options:
   --eval-viz                     Preset batch mode selector
   --after-run <run_dir_name>     Use runs strictly after this folder (sorted order)
   --before-run <run_dir_name>    Use runs up to this folder (inclusive, sorted order)
+  --max-steps <N>                Eval rollout max steps override for preset commands
+  --old-overcooked               Force old overcooked(v1) engine in preset commands
+  --new-overcooked               Disable forced old overcooked(v1) in preset commands
 
 Preset batch defaults:
   runs dir:                      $AUTO_RUNS_DIR
@@ -61,6 +66,8 @@ Preset batch defaults:
   gpu:                           $AUTO_GPU_IDX
   parallel batch size:           $AUTO_BATCH_SIZE
   preset eval mode:              $AUTO_PRESET_EVAL_MODE
+  max steps:                     $AUTO_MAX_STEPS
+  force old overcooked:          $AUTO_OLD_OVERCOOKED
   ph1 cross:                     num_seeds=$AUTO_PH1_CROSS_NUM_SEEDS num_recent_tildes=$AUTO_PH1_CROSS_NUM_RECENT_TILDES
   ph2 cross:                     num_seeds=$AUTO_PH2_CROSS_NUM_SEEDS
 
@@ -93,6 +100,10 @@ build_auto_preset_commands() {
   local to_run="$AUTO_TO_RUN"
   local gpu_idx="$AUTO_GPU_IDX"
   local preset_mode="$AUTO_PRESET_EVAL_MODE"
+  local old_flag=""
+  if [[ "$AUTO_OLD_OVERCOOKED" == "1" ]]; then
+    old_flag=" --old-overcooked"
+  fi
 
   if [[ ! -d "$runs_root" ]]; then
     return 0
@@ -151,18 +162,18 @@ build_auto_preset_commands() {
     case "$preset_mode" in
       cross-play)
         if [[ "$run_base_lc" == *"ph1"* ]]; then
-          echo "./run_visualize.sh --gpu $gpu_idx --dir runs/$run_base --cross --num_seeds $AUTO_PH1_CROSS_NUM_SEEDS --num_recent_tildes $AUTO_PH1_CROSS_NUM_RECENT_TILDES"
+          echo "./run_visualize.sh --gpu $gpu_idx --dir runs/$run_base --cross --num_seeds $AUTO_PH1_CROSS_NUM_SEEDS --num_recent_tildes $AUTO_PH1_CROSS_NUM_RECENT_TILDES --max_steps $AUTO_MAX_STEPS${old_flag}"
         elif [[ "$run_base_lc" == *"ph2"* ]]; then
-          echo "./run_visualize.sh --gpu $gpu_idx --dir runs/$run_base --cross --num_seeds $AUTO_PH2_CROSS_NUM_SEEDS"
+          echo "./run_visualize.sh --gpu $gpu_idx --dir runs/$run_base --cross --num_seeds $AUTO_PH2_CROSS_NUM_SEEDS --max_steps $AUTO_MAX_STEPS${old_flag}"
         fi
         ;;
       eval-viz)
         if [[ "$run_base_lc" == *"ph1"* ]]; then
-          echo "./run_visualize.sh --gpu $gpu_idx --dir runs/$run_base --$preset_mode"
+          echo "./run_visualize.sh --gpu $gpu_idx --dir runs/$run_base --$preset_mode --max_steps $AUTO_MAX_STEPS${old_flag}"
         fi
         ;;
       eval-analysis)
-        echo "./run_visualize.sh --gpu $gpu_idx --dir runs/$run_base --$preset_mode"
+        echo "./run_visualize.sh --gpu $gpu_idx --dir runs/$run_base --$preset_mode --max_steps $AUTO_MAX_STEPS${old_flag}"
         ;;
       *)
         echo "[WARN] unsupported AUTO_PRESET_EVAL_MODE: $preset_mode" >&2
@@ -220,10 +231,16 @@ run_preset_factory_commands() {
   fi
 
   echo "=== Preset Factory Commands ==="
-  echo "[INFO] auto_discover=$AUTO_DISCOVER_PRESETS runs_dir=$AUTO_RUNS_DIR date_from=$AUTO_DATE_FROM_YYYYMMDD after_run=${AUTO_AFTER_RUN:-<disabled>} before_run=${AUTO_BEFORE_RUN:-<disabled>} from_run=${AUTO_FROM_RUN:-<disabled>} to_run=${AUTO_TO_RUN:-<disabled>} batch_size=$batch_size mode=$AUTO_PRESET_EVAL_MODE"
+  echo "[INFO] auto_discover=$AUTO_DISCOVER_PRESETS runs_dir=$AUTO_RUNS_DIR date_from=$AUTO_DATE_FROM_YYYYMMDD after_run=${AUTO_AFTER_RUN:-<disabled>} before_run=${AUTO_BEFORE_RUN:-<disabled>} from_run=${AUTO_FROM_RUN:-<disabled>} to_run=${AUTO_TO_RUN:-<disabled>} batch_size=$batch_size mode=$AUTO_PRESET_EVAL_MODE max_steps=$AUTO_MAX_STEPS old_overcooked=$AUTO_OLD_OVERCOOKED"
 
   for cmd in "${commands[@]}"; do
     [[ -z "$cmd" ]] && continue
+    if [[ "$cmd" != *"--max_steps"* && "$cmd" != *"--max-steps"* ]]; then
+      cmd="$cmd --max_steps $AUTO_MAX_STEPS"
+    fi
+    if [[ "$AUTO_OLD_OVERCOOKED" == "1" && "$cmd" != *"--old-overcooked"* && "$cmd" != *"--old_overcooked"* ]]; then
+      cmd="$cmd --old-overcooked"
+    fi
     total=$((total + 1))
     echo "[CMD] $cmd"
     if [[ "$DRY_RUN" != "true" ]]; then
@@ -320,7 +337,7 @@ idx=1
 while [[ $idx -le $# ]]; do
   arg="${!idx}"
   case "$arg" in
-    --dry-run|--cross-play|--eval-analysis|--eval-viz)
+    --dry-run|--cross-play|--eval-analysis|--eval-viz|--old-overcooked|--new-overcooked)
       ;;
     --after-run)
       idx=$((idx + 1))
@@ -333,6 +350,13 @@ while [[ $idx -le $# ]]; do
       idx=$((idx + 1))
       if [[ $idx -gt $# ]]; then
         echo "[ERROR] --before-run requires a run directory name"
+        exit 1
+      fi
+      ;;
+    --max-steps)
+      idx=$((idx + 1))
+      if [[ $idx -gt $# ]]; then
+        echo "[ERROR] --max-steps requires a value"
         exit 1
       fi
       ;;
@@ -390,6 +414,23 @@ if [[ "$factory_only" == "true" ]]; then
           exit 1
         fi
         AUTO_BEFORE_RUN="$1"
+        shift
+        ;;
+      --max-steps)
+        shift
+        if [[ $# -eq 0 ]]; then
+          echo "[ERROR] --max-steps requires a value"
+          exit 1
+        fi
+        AUTO_MAX_STEPS="$1"
+        shift
+        ;;
+      --old-overcooked)
+        AUTO_OLD_OVERCOOKED=1
+        shift
+        ;;
+      --new-overcooked)
+        AUTO_OLD_OVERCOOKED=0
         shift
         ;;
     esac

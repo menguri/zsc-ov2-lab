@@ -10,7 +10,6 @@ from pathlib import Path
 import chex
 import imageio
 import csv
-from jaxmarl.environments.overcooked_v2.overcooked import OvercookedV2
 
 
 DIR = os.path.dirname(os.path.abspath(__file__))
@@ -32,6 +31,10 @@ from overcooked_v2_experiments.utils.utils import (
 )
 from overcooked_v2_experiments.eval.evaluate import eval_pairing
 from overcooked_v2_experiments.eval.policy import PolicyPairing
+from overcooked_v2_experiments.eval.utils import (
+    make_eval_env,
+    resolve_old_overcooked_flags,
+)
 
 
 def visualize_ppo_policy(
@@ -43,6 +46,8 @@ def visualize_ppo_policy(
     cross=False,
     no_viz=False,
     pairing_policy=None,
+    old_overcooked_override=None,
+    disable_old_overcooked_auto_override=None,
 ):
     # cross-play인데 모든 ckpt를 쓰려고 하면 모순 → 방어 코드
     if cross and not final_only:
@@ -54,7 +59,20 @@ def visualize_ppo_policy(
     # 2) 환경 생성
     initial_env_kwargs = copy.deepcopy(config["env"]["ENV_KWARGS"])
     env_kwargs = initial_env_kwargs | extra_env_kwargs
-    env = OvercookedV2(**env_kwargs)
+    cfg_old_overcooked, cfg_disable_old_auto = resolve_old_overcooked_flags(config)
+    if old_overcooked_override is not None:
+        cfg_old_overcooked = bool(old_overcooked_override)
+    if disable_old_overcooked_auto_override is not None:
+        cfg_disable_old_auto = bool(disable_old_overcooked_auto_override)
+    env_layout = env_kwargs.get("layout")
+    env_kwargs_no_layout = copy.deepcopy(env_kwargs)
+    env_kwargs_no_layout.pop("layout", None)
+    env, _env_name, _resolved_kwargs = make_eval_env(
+        env_layout,
+        env_kwargs_no_layout,
+        old_overcooked=cfg_old_overcooked,
+        disable_auto=cfg_disable_old_auto,
+    )
 
     num_actors = env.num_agents
     run_keys = list(all_params.keys())
@@ -216,6 +234,8 @@ def visualize_ppo_policy(
                         all_recipes=num_seeds is None,
                         no_viz=no_viz,
                         algorithm=alg_arg,
+                        old_overcooked=cfg_old_overcooked,
+                        disable_old_overcooked_auto=cfg_disable_old_auto,
                     )
                 
                 if no_viz:
@@ -317,6 +337,9 @@ if __name__ == "__main__":
     parser.add_argument("--no_viz", action="store_true")
     parser.add_argument("--no_reset", action="store_true")
     parser.add_argument("--pairing_policy", type=int)
+    parser.add_argument("--old_overcooked", action="store_true")
+    parser.add_argument("--disable_old_overcooked_auto", action="store_true")
+    parser.add_argument("--max_steps", type=int, default=None)
 
     args = parser.parse_args()
 
@@ -338,6 +361,8 @@ if __name__ == "__main__":
     if args.no_reset:
         extra_env_kwargs["random_reset"] = False
         extra_env_kwargs["op_ingredient_permutations"] = False
+    if args.max_steps is not None:
+        extra_env_kwargs["max_steps"] = int(args.max_steps)
 
     for mode in modes:
         fo = final_only or (mode == "cross")
@@ -350,4 +375,6 @@ if __name__ == "__main__":
             no_viz=args.no_viz,
             extra_env_kwargs=extra_env_kwargs,
             pairing_policy=args.pairing_policy,
+            old_overcooked_override=args.old_overcooked,
+            disable_old_overcooked_auto_override=args.disable_old_overcooked_auto,
         )

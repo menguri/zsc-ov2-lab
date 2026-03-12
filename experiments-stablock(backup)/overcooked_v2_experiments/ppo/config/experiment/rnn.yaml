@@ -1,5 +1,0 @@
-# @package _global_
-defaults:
-  - override /model: rnn
-
-NUM_SEEDS: 2

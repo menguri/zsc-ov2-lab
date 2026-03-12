@@ -31,6 +31,8 @@ EVAL_VIZ_MAX_STEPS=400
 EVAL_DISABLE_JIT="False"
 EVAL_ENV_DEVICE="cpu"
 EVAL_PLATFORM="cuda"
+OLD_OVERCOOKED=false
+MAX_STEPS=""
 
 usage() {
     echo "Usage: $0 --dir <directory> [options]"
@@ -46,8 +48,10 @@ usage() {
     echo "  --no_viz                  Skip video generation (only compute metrics)"
     echo "  --no_reset                Disable random reset and permutations"
     echo "  --pairing_policy <id>     Policy index for pairing in cross-play"
+    echo "  --max_steps <n>           Eval rollout max steps override"
     echo "  --latent_analysis         Evaluate fixed e_t per episode (self-play only)"
     echo "  --value_analysis          Evaluate all e_t candidates per step (self-play only)"
+    echo "  --old-overcooked         Force old jaxmarl overcooked(v1) eval engine"
     echo ""
     echo "Options (offline eval-analysis mode):"
     echo "  --eval-analysis           Run offline eval analysis csv generation"
@@ -87,6 +91,8 @@ while [[ $# -gt 0 ]]; do
         --eval-disable-jit) EVAL_DISABLE_JIT="$2"; shift 2 ;;
         --eval-env-device) EVAL_ENV_DEVICE="$2"; shift 2 ;;
         --eval-platform) EVAL_PLATFORM="$2"; shift 2 ;;
+        --max_steps|--max-steps) MAX_STEPS="$2"; shift 2 ;;
+        --old-overcooked) OLD_OVERCOOKED=true; shift ;;
         -h|--help) usage; exit 0 ;;
         *)
             echo "Unknown option: $1"
@@ -105,6 +111,10 @@ fi
 if [[ "$EVAL_ANALYSIS" == true && "$EVAL_VIZ" == true ]]; then
     echo "Error: --eval-analysis and --eval-viz cannot be used together"
     exit 1
+fi
+
+if [[ -n "$MAX_STEPS" ]]; then
+    EVAL_VIZ_MAX_STEPS="$MAX_STEPS"
 fi
 
 if [[ "$EVAL_VIZ" == true ]]; then
@@ -229,6 +239,8 @@ echo "No visualization: $NO_VIZ"
 echo "No reset: $NO_RESET"
 echo "Latent analysis: $LATENT_ANALYSIS"
 echo "Value analysis: $VALUE_ANALYSIS"
+echo "Old overcooked: $OLD_OVERCOOKED"
+[ -n "$MAX_STEPS" ] && echo "Max steps override: $MAX_STEPS"
 [ -n "$PAIRING_POLICY" ] && echo "Pairing policy: $PAIRING_POLICY"
 echo "===================================="
 
@@ -266,6 +278,8 @@ if [[ "$CROSS" == true && "$dir_base_lc" == *"ph1"* ]]; then
     [ "$NO_VIZ" = true ] && PH1_ARGS+=( --no_viz )
     [ "$NO_RESET" = true ] && PH1_ARGS+=( --no_reset )
     [ -n "$PAIRING_POLICY" ] && PH1_ARGS+=( --pairing_policy "$PAIRING_POLICY" )
+    [ "$OLD_OVERCOOKED" = true ] && PH1_ARGS+=( --old_overcooked )
+    [ -n "$MAX_STEPS" ] && PH1_ARGS+=( --max_steps "$MAX_STEPS" )
 
     cd "$REPO_ROOT" || exit 1
     export PYTHONPATH="$REPO_ROOT"
@@ -288,6 +302,8 @@ ARGS=( --d "$DIRECTORY" --seed "$SEED" --num_seeds "$NUM_SEEDS" )
 [ -n "$PAIRING_POLICY" ] && ARGS+=( --pairing_policy "$PAIRING_POLICY" )
 [ "$LATENT_ANALYSIS" = true ] && ARGS+=( --latent_analysis )
 [ "$VALUE_ANALYSIS" = true ] && ARGS+=( --value_analysis )
+[ "$OLD_OVERCOOKED" = true ] && ARGS+=( --old_overcooked )
+[ -n "$MAX_STEPS" ] && ARGS+=( --max_steps "$MAX_STEPS" )
 
 # Change to experiments directory
 cd "$REPO_ROOT" || exit 1

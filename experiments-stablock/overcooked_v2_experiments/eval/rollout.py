@@ -3,6 +3,7 @@ import jax
 import jax.numpy as jnp
 import chex
 from .policy import AbstractPolicy, PolicyPairing
+from .utils import extract_global_full_obs, extract_pos_yx
 
 
 @chex.dataclass
@@ -92,6 +93,7 @@ def get_rollout(
 ) -> PolicyRollout:
     init_hstate, _get_actions = init_rollout(policies, env)
     ph1_enabled = "PH1" in algorithm
+    env_name = "overcooked_v2" if hasattr(env, "get_obs_default") else "overcooked"
 
     # PH1 uses the same predictor-conditioned execution path as E3T during eval.
     e3t_like = (
@@ -242,7 +244,7 @@ def get_rollout(
             and hasattr(policies[0], "params")
         ):
             policy0 = policies[0]
-            global_full_next = env.get_obs_default(next_state)[0].astype(jnp.float32)
+            global_full_next = extract_global_full_obs(env, next_state, env_name)
             global_full_next_actor = jnp.stack(
                 [global_full_next for _ in range(env.num_agents)], axis=0
             )
@@ -335,7 +337,7 @@ def get_rollout(
         if ph1_enabled:
             # PH1 policy execution now uses each agent's observation (no full-obs override).
             # Only `blocked_states` should carry the global full target (tilde{s}).
-            global_full = env.get_obs_default(state)[0].astype(jnp.float32)  # (H, W, C_full)
+            global_full = extract_global_full_obs(env, state, env_name)  # (H, W, C_full)
             blocked_states_step = _build_ph1_blocked_states_step(global_full)
             kwargs["blocked_states"] = blocked_states_step
 
@@ -347,8 +349,7 @@ def get_rollout(
         )
 
         # Collect agent positions (y, x) at current timestep
-        pos_y = state.agents.pos.y
-        pos_x = state.agents.pos.x
+        pos_y, pos_x = extract_pos_yx(state, env_name)
         pos_vec = jnp.stack([pos_y, pos_x], axis=-1)
 
         # Calculate prediction accuracy
@@ -498,7 +499,7 @@ def get_rollout(
         obs_for_policy = obs
         blocked_states_step = None
         if ph1_enabled:
-            global_full = env.get_obs_default(state)[0].astype(jnp.float32)  # (H, W, C_full)
+            global_full = extract_global_full_obs(env, state, env_name)  # (H, W, C_full)
             blocked_states_step = _build_ph1_blocked_states_step(global_full)
             kwargs["blocked_states"] = blocked_states_step
 
@@ -510,8 +511,7 @@ def get_rollout(
         )
 
         # Collect agent positions (y, x) at current timestep
-        pos_y = state.agents.pos.y
-        pos_x = state.agents.pos.x
+        pos_y, pos_x = extract_pos_yx(state, env_name)
         pos_vec = jnp.stack([pos_y, pos_x], axis=-1)
 
         # Calculate prediction accuracy

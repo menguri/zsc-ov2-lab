@@ -17,6 +17,18 @@ ENV_DEVICE="cpu"
 NENVS=64
 NSTEPS=128
 NUM_SEEDS=5
+OLD_OVERCOOKED="${OLD_OVERCOOKED:-0}"  # 1이면 old overcooked(v1) 엔진 강제
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --old-overcooked) OLD_OVERCOOKED="1"; shift ;;
+        --no-old-overcooked) OLD_OVERCOOKED="0"; shift ;;
+        *)
+            echo "[WARN] Unknown option ignored: $1"
+            shift
+            ;;
+    esac
+done
 
 # PH1 Default Settings
 BETA=0.5 # Default value, can be overridden
@@ -78,6 +90,9 @@ run_ph1() {
     echo "BETA_SCHEDULE: enabled=$PH1_BETA_SCHEDULE_ENABLED start=$PH1_BETA_START end=$beta_end horizon=$PH1_BETA_SCHEDULE_HORIZON_ENV_STEPS"
     echo "SIGMA: $sigma"
     echo "WARMUP: $warmup_steps"
+    if [[ "$OLD_OVERCOOKED" == "1" ]]; then
+      echo "ENGINE: old_overcooked(v1)"
+    fi
     echo "================================================================================"
 
     local cmd="./run_user_wandb.sh \
@@ -115,6 +130,9 @@ run_ph1() {
         --ph1-eval-log-video $PH1_EVAL_LOG_VIDEO \
         --ph1-eval-viz-episodes $PH1_EVAL_VIZ_EPISODES \
         --ph1-eval-num-seeds $PH1_EVAL_NUM_SEEDS"
+    if [[ "$OLD_OVERCOOKED" == "1" ]]; then
+      cmd="$cmd --old-overcooked"
+    fi
 
     echo "Executing: $cmd"
     local run_log_file

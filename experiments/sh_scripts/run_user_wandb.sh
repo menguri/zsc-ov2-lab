@@ -24,6 +24,7 @@ LEGACY_VENV_DIR="${REPO_ROOT}/overcookedv2"
 : "${ENV_GROUP:=original}"                     # 예: original, grounded_coord_simple, test_time_wide
 : "${LAYOUT:=cramped_room}"                   # ENV_GROUP=original 일 때 사용
 : "${EXPERIMENT:=cnn}"                         # 예: cnn, rnn-op, rnn-sa, rnn-fcp
+: "${OLD_OVERCOOKED:=0}"                       # 1이면 jaxmarl overcooked(v1) 엔진 강제
 
 # JAX 메모리 설정
 : "${XLA_PYTHON_CLIENT_PREALLOCATE:=false}"    # 메모리 선할당 방지
@@ -136,6 +137,7 @@ while [[ $# -gt 0 ]]; do
     --env)        ENV_GROUP="$2"; shift 2;;
     --layout)     LAYOUT="$2"; shift 2;;
     --exp|--experiment) EXPERIMENT="$2"; shift 2;;
+    --old-overcooked) OLD_OVERCOOKED="1"; shift 1;;
     --project)    WANDB_PROJECT="$2"; shift 2;;
     --entity)     WANDB_ENTITY="$2"; shift 2;;
     --notes)      NOTES="$2"; shift 2;;
@@ -167,6 +169,9 @@ export WANDB_ENTITY
 # ==============================================================================
 
 RUN_NAME="${EXPERIMENT}"
+if [[ "$OLD_OVERCOOKED" == "1" ]]; then
+  RUN_NAME="${RUN_NAME}_old_overcooked"
+fi
 
 echo "==============================================================="
 echo "  Run Name     : $RUN_NAME"
@@ -185,6 +190,7 @@ fi
 echo "  Env Group    : $ENV_GROUP"
 echo "  Layout       : $LAYOUT"
 echo "  Experiment   : $EXPERIMENT"
+[[ "$OLD_OVERCOOKED" == "1" ]]       && echo "  Engine Mode  : old_overcooked(v1)"
 echo "  W&B Project  : $WANDB_PROJECT"
 echo "  W&B Entity   : $WANDB_ENTITY"
 
@@ -245,6 +251,9 @@ fi
 
 # 1) 기본 태그 리스트 구성
 RAW_TAGS=("${EXPERIMENT}" "${ENV_GROUP}" "${LAYOUT}" "${ITERATIONS_OVERRIDE}")
+if [[ "$OLD_OVERCOOKED" == "1" ]]; then
+  RAW_TAGS+=("old_overcooked")
+fi
 
 # 2) --tags "a,b c" 같이 들어온 사용자 태그 파싱 (콤마/스페이스 모두 구분자)
 if [[ -n "$TAGS" ]]; then
@@ -301,6 +310,10 @@ else
   PY_ARGS+=("NUM_SEEDS=${NUM_SEEDS}")
 fi
 
+if [[ "$OLD_OVERCOOKED" == "1" ]]; then
+  PY_ARGS+=("OLD_OVERCOOKED=True")
+fi
+
 # FCP population 디렉토리 override
 if [[ -n "$FCP_DIR" ]]; then
   PY_ARGS+=("+FCP=${FCP_DIR}")
@@ -343,10 +356,10 @@ fi
 
 # FCP population annealing override
 if [[ -n "$POP_ANNEAL_HORIZON_OVERRIDE" ]]; then
-  PY_ARGS+=("POPULATION_ANNEAL_HORIZON=${POP_ANNEAL_HORIZON_OVERRIDE}")
+  PY_ARGS+=("++POPULATION_ANNEAL_HORIZON=${POP_ANNEAL_HORIZON_OVERRIDE}")
 fi
 if [[ -n "$POP_ANNEAL_BEGIN_OVERRIDE" ]]; then
-  PY_ARGS+=("POPULATION_ANNEAL_BEGIN=${POP_ANNEAL_BEGIN_OVERRIDE}")
+  PY_ARGS+=("++POPULATION_ANNEAL_BEGIN=${POP_ANNEAL_BEGIN_OVERRIDE}")
 fi
 
 # ====================================================

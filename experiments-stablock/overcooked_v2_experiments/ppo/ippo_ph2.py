@@ -142,18 +142,14 @@ def _replace_shared_predictor_subtree(tree, shared_subtree, target_key="shared_p
 def _sync_train_state_shared_predictor(
     train_state: TrainState,
     shared_params_subtree,
-    shared_opt_subtree,
     target_key="shared_predictor",
 ) -> TrainState:
     new_params = _replace_shared_predictor_subtree(
         train_state.params, shared_params_subtree, target_key=target_key
     )
-    new_opt_state = _replace_shared_predictor_subtree(
-        train_state.opt_state, shared_opt_subtree, target_key=target_key
-    )
-    if (new_params is train_state.params) and (new_opt_state is train_state.opt_state):
+    if new_params is train_state.params:
         return train_state
-    return train_state.replace(params=new_params, opt_state=new_opt_state)
+    return train_state.replace(params=new_params)
 
 
 def _extract_shared_predictor_bundle(tree):
@@ -166,14 +162,12 @@ def _extract_shared_predictor_bundle(tree):
 def _sync_train_state_shared_predictor_bundle(
     train_state: TrainState,
     shared_params_bundle,
-    shared_opt_bundle,
 ) -> TrainState:
     out = train_state
     for key in _SHARED_PREDICTOR_KEYS:
         out = _sync_train_state_shared_predictor(
             out,
             shared_params_bundle.get(key),
-            shared_opt_bundle.get(key),
             target_key=key,
         )
     return out
@@ -323,14 +317,12 @@ def make_train(
         # initialize shared predictor state from spec, then inject into ind.
         if shared_prediction:
             shared_pred_params = _extract_shared_predictor_bundle(spec_state.params)
-            shared_pred_opt = _extract_shared_predictor_bundle(spec_state.opt_state)
             ind_state = _sync_train_state_shared_predictor_bundle(
-                ind_state, shared_pred_params, shared_pred_opt
+                ind_state, shared_pred_params
             )
             ind_runner_state = _set_runner_field(ind_runner_state, 0, ind_state)
         else:
             shared_pred_params = {}
-            shared_pred_opt = {}
 
         if int(initial_offset) != 0:
             spec_runner_state = _set_runner_field(
@@ -489,7 +481,6 @@ def make_train(
                     _last_spec_out_c,
                     _last_ind_out_c,
                     shared_params_c,
-                    shared_opt_c,
                 ) = carry
 
                 rng_loop_c, rng_spec_call, rng_ind_call = jax.random.split(rng_loop_c, 3)
@@ -498,10 +489,10 @@ def make_train(
 
                 # Inject shared predictor into both train states before each role update.
                 spec_state_c = _sync_train_state_shared_predictor_bundle(
-                    spec_state_c, shared_params_c, shared_opt_c
+                    spec_state_c, shared_params_c
                 )
                 ind_state_c = _sync_train_state_shared_predictor_bundle(
-                    ind_state_c, shared_params_c, shared_opt_c
+                    ind_state_c, shared_params_c
                 )
                 spec_runner_c = _set_runner_field(spec_runner_c, 0, spec_state_c)
                 ind_runner_c = _set_runner_field(ind_runner_c, 0, ind_state_c)
@@ -518,13 +509,10 @@ def make_train(
                 shared_params_after_spec = _extract_shared_predictor_bundle(
                     next_spec_state.params
                 )
-                shared_opt_after_spec = _extract_shared_predictor_bundle(
-                    next_spec_state.opt_state
-                )
 
                 # Spec updated predictor is injected into ind before ind step.
                 ind_state_step = _sync_train_state_shared_predictor_bundle(
-                    ind_state_c, shared_params_after_spec, shared_opt_after_spec
+                    ind_state_c, shared_params_after_spec
                 )
                 ind_runner_step = _set_runner_field(ind_runner_c, 0, ind_state_step)
                 ind_out_c = ind_step(
@@ -541,14 +529,11 @@ def make_train(
                 shared_params_next = _extract_shared_predictor_bundle(
                     next_ind_state.params
                 )
-                shared_opt_next = _extract_shared_predictor_bundle(
-                    next_ind_state.opt_state
-                )
                 next_spec_state = _sync_train_state_shared_predictor_bundle(
-                    next_spec_state, shared_params_next, shared_opt_next
+                    next_spec_state, shared_params_next
                 )
                 next_ind_state = _sync_train_state_shared_predictor_bundle(
-                    next_ind_state, shared_params_next, shared_opt_next
+                    next_ind_state, shared_params_next
                 )
                 next_spec_runner = _set_runner_field(next_spec_runner, 0, next_spec_state)
                 next_ind_runner = _set_runner_field(next_ind_runner, 0, next_ind_state)
@@ -600,7 +585,6 @@ def make_train(
                     spec_out_c,
                     ind_out_c,
                     shared_params_next,
-                    shared_opt_next,
                 )
 
             if shared_prediction:
@@ -616,7 +600,6 @@ def make_train(
                     last_spec_out,
                     last_ind_out,
                     shared_pred_params,
-                    shared_pred_opt,
                 )
                 carry = _advance_one_step_shared(carry)
 
@@ -643,7 +626,6 @@ def make_train(
                     last_spec_out,
                     last_ind_out,
                     shared_pred_params,
-                    shared_pred_opt,
                 ) = carry
             else:
                 carry = (

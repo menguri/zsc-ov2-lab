@@ -207,6 +207,12 @@ overcooked_v2_experiments/human_rl/imitation/processed_data
 **/*.safetensors
 **/*.npz
 **/*.npy
+*.png
+*.gif
+
+# Keep training-required JaxMARL environment source/assets trackable.
+!JaxMARL/jaxmarl/environments/overcooked_v2/
+!JaxMARL/jaxmarl/environments/overcooked_v2/**
 
 # Keep training-required JaxMARL environment source/assets trackable.
 !JaxMARL/jaxmarl/environments/overcooked_v2/

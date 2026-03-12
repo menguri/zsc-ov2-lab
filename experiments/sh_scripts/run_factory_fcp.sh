@@ -13,13 +13,27 @@ EXP="rnn-fcp"
 ENV_DEVICE="cpu"
 NENVS=128
 NSTEPS=128
+OLD_OVERCOOKED=1
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --old-overcooked)
+            OLD_OVERCOOKED=1
+            shift
+            ;;
+        *)
+            echo "[WARN] Unknown arg: $1"
+            shift
+            ;;
+    esac
+done
 
 # FCP Specific Settings
 FCP_DEVICE="gpu"
 SEEDS=10
 
 # Population annealing settings for FCP mixed training
-: "${POP_ANNEAL_ENABLE:=1}"
+: "${POP_ANNEAL_ENABLE:=0}"
 : "${POP_ANNEAL_HORIZON:=30000000}"
 : "${POP_ANNEAL_BEGIN:=0}"
 
@@ -94,6 +108,10 @@ run_fcp() {
         --nsteps $NSTEPS \
         --seeds $SEEDS \
         --fcp-device $FCP_DEVICE"
+
+    if [[ "$OLD_OVERCOOKED" == "1" ]]; then
+        cmd="$cmd --old-overcooked"
+    fi
         
     if [ -n "$fcp_path" ]; then
         cmd="$cmd --fcp $fcp_path"
@@ -138,17 +156,17 @@ run_fcp() {
 # # 6. Test Time Wide
 # run_fcp "0,1,2,3,4" "test_time_wide" ""
 
-# 7. Cramped Room (Original)
-# run_fcp "0,1,2,3,4" "cramped_room" ""
+# 11. Counter Circuit (Original)
+run_fcp "0,1,2,3,4" "counter_circuit" ""
+wait
+# # 7. Cramped Room (Original)
+run_fcp "0,1,2,3,4" "cramped_room" ""
 
-# 8. Asymmetric Advantages (Original)
-# run_fcp "0,1,2,3,4" "asymm_advantages" ""
+# # 8. Asymmetric Advantages (Original)
+run_fcp "0,1,2,3,4" "asymm_advantages" ""
 
 # 9. Coordination Ring (Original)
 # run_fcp "0,1,2,3,4" "coord_ring" ""
 
-# 10. Forced Coordination (Original)
-# run_fcp "0,1,2,3,4" "forced_coord" ""
-
-# 11. Counter Circuit (Original)
-run_fcp "0,1,2,3,4" "counter_circuit" ""
+# # 10. Forced Coordination (Original)
+run_fcp "0,1,2,3,4" "forced_coord" ""

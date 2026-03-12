@@ -5,6 +5,13 @@ set -euo pipefail
 
 # Change to script directory
 cd "$(dirname "$0")" || exit 1
+EVAL_MAX_STEPS="${EVAL_MAX_STEPS:-100}"
+OLD_OVERCOOKED="${OLD_OVERCOOKED:-1}"  # 1: force jaxmarl overcooked(v1), 0: default routing
+
+OLD_ENGINE_ARGS=()
+if [[ "$OLD_OVERCOOKED" == "1" ]]; then
+  OLD_ENGINE_ARGS+=( --old-overcooked )
+fi
 
 # run_visualize.sh 존재 확인
 if [ ! -f "run_visualize.sh" ]; then
@@ -13,6 +20,8 @@ if [ ! -f "run_visualize.sh" ]; then
 fi
 
 echo "Starting visualization factory by environment..."
+echo "Eval max steps: ${EVAL_MAX_STEPS}"
+echo "Old overcooked(v1): ${OLD_OVERCOOKED}"
 
 # ./run_visualize.sh --gpu 7 --dir runs/20251209-000000_coord_ring --all --num_seeds 5
 # ./run_visualize.sh --gpu 0 --dir runs/20260309-142621_genx798o_cramped_room_e3t --cross --num_seeds 5 &
@@ -26,7 +35,11 @@ echo "Starting visualization factory by environment..."
 # # ./run_visualize.sh --gpu 2 --dir runs/20260310-042100_3yznlku8_asymm_advantages_e3t --cross --num_seeds 5 &
 # ./run_visualize.sh --gpu 3 --dir runs/20260310-043022_nmirwdsr_forced_coord_fcp --cross --num_seeds 5 &
 # wait
-./run_visualize.sh --gpu 5 --dir runs/20260310-060205_y9a60a1c_counter_circuit_fcp --cross --num_seeds 5 &
+./run_visualize.sh --gpu 5 --dir runs/20260311-160913_ueuodjwx_cramped_room_e3t --cross --num_seeds 5 --no_viz --max_steps "${EVAL_MAX_STEPS}" "${OLD_ENGINE_ARGS[@]}"
+./run_visualize.sh --gpu 5 --dir runs/20260311-195718_vg9hdki1_coord_ring_e3t --cross --num_seeds 5 --no_viz --max_steps "${EVAL_MAX_STEPS}" "${OLD_ENGINE_ARGS[@]}"
+./run_visualize.sh --gpu 5 --dir runs/20260312-001524_oafs0y2o_forced_coord_e3t --cross --num_seeds 5 --no_viz --max_steps "${EVAL_MAX_STEPS}" "${OLD_ENGINE_ARGS[@]}"
+# ./run_visualize.sh --gpu 5 --dir runs/20260311-194957_zxfgx6u0_forced_coord_sp --cross --num_seeds 5 --no_viz --max_steps "${EVAL_MAX_STEPS}" "${OLD_ENGINE_ARGS[@]}"
+# ./run_visualize.sh --gpu 5 --dir runs/20260311-210104_p017uvs1_counter_circuit_sp --cross --num_seeds 5 --no_viz --max_steps "${EVAL_MAX_STEPS}" "${OLD_ENGINE_ARGS[@]}"
 
 echo ""
 echo "All visualizations completed!"

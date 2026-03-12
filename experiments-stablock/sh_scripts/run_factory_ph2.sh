@@ -14,6 +14,18 @@ ENV_DEVICE="gpu"
 NENVS=64
 NUM_SEEDS=5
 FIXED_SEED=42
+OLD_OVERCOOKED="${OLD_OVERCOOKED:-1}"  # 1이면 old overcooked(v1) 엔진 강제
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --old-overcooked) OLD_OVERCOOKED="1"; shift ;;
+    --no-old-overcooked) OLD_OVERCOOKED="0"; shift ;;
+    *)
+      echo "[WARN] Unknown option ignored: $1"
+      shift
+      ;;
+  esac
+done
 
 NSTEPS=256
 # Shared PH1 blocked-target params
@@ -28,14 +40,14 @@ NSTEPS=256
 : "${PH1_POOL_SIZE:=128}"
 : "${PH1_NORMAL_PROB:=0.5}"
 : "${PH1_MULTI_PENALTY_ENABLED:=True}"
-: "${PH1_MULTI_PENALTY_SINGLE_WEIGHT:=2.0}"
+: "${PH1_MULTI_PENALTY_SINGLE_WEIGHT:=1.0}"
 : "${PH1_MULTI_PENALTY_OTHER_WEIGHT:=1.0}"
 : "${PH1_EPSILON:=0.2}"
 : "${PH2_EPSILON:=0.2}"
 : "${PH1_WARMUP_STEPS:=2000000}"
 : "${PH1_EVAL_ENABLED:=False}"
-: "${PH1_EVAL_EVERY_ENV_STEPS:=1000000}"
-: "${PH1_EVAL_VIDEO_EVERY_ENV_STEPS:=1000000}"
+: "${PH1_EVAL_EVERY_ENV_STEPS:=10000000}"
+: "${PH1_EVAL_VIDEO_EVERY_ENV_STEPS:=10000000}"
 : "${PH1_EVAL_DEFER_VIDEO:=True}"
 : "${PH1_EVAL_DISABLE_JIT:=True}"
 : "${PH1_EVAL_OFFLINE_ONLY:=True}"
@@ -62,6 +74,9 @@ run_ph2() {
   local ph1_max_penalty_count=${5:-1}
 
   local tags="ph2,e3t,multi_penalty_max${ph1_max_penalty_count}"
+  if [[ "$OLD_OVERCOOKED" == "1" ]]; then
+    tags="${tags},old_overcooked"
+  fi
 
   local -a cmd=("./run_user_wandb.sh"
     --gpus "$gpus"
@@ -107,6 +122,10 @@ run_ph2() {
     --pred-z-dim "$PRED_Z_DIM" \
     --state-pred-loss-coef "$STATE_PRED_LOSS_COEF")
 
+  if [[ "$OLD_OVERCOOKED" == "1" ]]; then
+    cmd+=(--old-overcooked)
+  fi
+
   if [[ -n "$PH2_FIXED_IND_PROB" ]]; then
     cmd+=(--ph2-fixed-ind-prob "$PH2_FIXED_IND_PROB")
   fi
@@ -119,40 +138,41 @@ run_ph2() {
 }
 
 # -----------------------------------------------------------------------------
-# PH2 Preset: counter_circuit / omega=10 / sigma=2.0 / max_penalty_count=1
-# - 3 runs:
-#   1) action prediction + shared predictor
-#   2) state prediction  + shared predictor
-#   3) state prediction  + non-shared predictor
-# - Sequential execution to avoid overlap
+# PH2 Preset: OV1 layouts / omega=10 / sigma=2.0 / max_penalty_count=1
+# - Sequential execution by layout (one-by-one)
 # -----------------------------------------------------------------------------
 SWEEP_GPUS="0,1,2,3,4"
-TARGET_ENV="counter_circuit"
 TARGET_OMEGA=10.0
 TARGET_SIGMA=2.0
 TARGET_MAX_COUNT=1
 
-echo "[PH2-SWEEP] start: env=$TARGET_ENV gpus=$SWEEP_GPUS omega=$TARGET_OMEGA sigma=$TARGET_SIGMA max_penalty_count=$TARGET_MAX_COUNT"
+echo "[PH2-SWEEP] start: env=OV1_LAYOUTS gpus=$SWEEP_GPUS omega=$TARGET_OMEGA sigma=$TARGET_SIGMA max_penalty_count=$TARGET_MAX_COUNT"
+if [[ "$OLD_OVERCOOKED" == "1" ]]; then
+  echo "[PH2-SWEEP] engine=old_overcooked(v1)"
+fi
 
-# # 1) action prediction + shared predictor
-# SHARED_PREDICTION="True"
-# ACTION_PREDICTION="True"
-# STATE_PREDICTION="False"
-# echo "[PH2-SWEEP] case=action_shared shared=$SHARED_PREDICTION action=$ACTION_PREDICTION state=$STATE_PREDICTION"
-# run_ph2 "$SWEEP_GPUS" "$TARGET_ENV" "$TARGET_OMEGA" "$TARGET_SIGMA" "$TARGET_MAX_COUNT"
-
-# # 2) state prediction + shared predictor
-# SHARED_PREDICTION="True"
-# ACTION_PREDICTION="False"
-# STATE_PREDICTION="True"
-# echo "[PH2-SWEEP] case=state_shared shared=$SHARED_PREDICTION action=$ACTION_PREDICTION state=$STATE_PREDICTION"
-# run_ph2 "$SWEEP_GPUS" "$TARGET_ENV" "$TARGET_OMEGA" "$TARGET_SIGMA" "$TARGET_MAX_COUNT"
-
-# 3) state prediction + non-shared predictor
+# PH2 mode: state prediction + non-shared predictor
 SHARED_PREDICTION="False"
-ACTION_PREDICTION="False"
-STATE_PREDICTION="True"
+ACTION_PREDICTION="True"
+STATE_PREDICTION="False"
 echo "[PH2-SWEEP] case=state_not_shared shared=$SHARED_PREDICTION action=$ACTION_PREDICTION state=$STATE_PREDICTION"
-run_ph2 "$SWEEP_GPUS" "$TARGET_ENV" "$TARGET_OMEGA" "$TARGET_SIGMA" "$TARGET_MAX_COUNT"
 
-echo "[PH2-SWEEP] all 3 jobs finished."
+
+echo "[PH2-SWEEP] layout=counter_circuit"
+run_ph2 "$SWEEP_GPUS" "counter_circuit" "$TARGET_OMEGA" "$TARGET_SIGMA" "$TARGET_MAX_COUNT"
+
+echo "[PH2-SWEEP] layout=cramped_room"
+run_ph2 "$SWEEP_GPUS" "cramped_room" "$TARGET_OMEGA" "$TARGET_SIGMA" "$TARGET_MAX_COUNT"
+
+wait 
+
+echo "[PH2-SWEEP] layout=asymm_advantages"
+run_ph2 "$SWEEP_GPUS" "asymm_advantages" "$TARGET_OMEGA" "$TARGET_SIGMA" "$TARGET_MAX_COUNT"
+
+echo "[PH2-SWEEP] layout=coord_ring"
+run_ph2 "$SWEEP_GPUS" "coord_ring" "$TARGET_OMEGA" "$TARGET_SIGMA" "$TARGET_MAX_COUNT"
+
+echo "[PH2-SWEEP] layout=forced_coord"
+run_ph2 "$SWEEP_GPUS" "forced_coord" "$TARGET_OMEGA" "$TARGET_SIGMA" "$TARGET_MAX_COUNT"
+
+echo "[PH2-SWEEP] all OV1 layout jobs finished."

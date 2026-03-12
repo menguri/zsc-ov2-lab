@@ -1,0 +1,4 @@
+"ENV_NAME": "overcooked"
+"ENV_KWARGS":
+  "layout": "cramped_room"
+  "max_steps": 400

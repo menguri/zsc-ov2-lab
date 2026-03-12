@@ -14,6 +14,8 @@ NO_VIZ=false
 NO_RESET=false
 PAIRING_POLICY=""
 DIRECTORY=""
+OLD_OVERCOOKED=false
+MAX_STEPS=""
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -28,6 +30,8 @@ while [[ $# -gt 0 ]]; do
         --no_viz)         NO_VIZ=true;           shift ;;
         --no_reset)       NO_RESET=true;         shift ;;
         --pairing_policy) PAIRING_POLICY="$2";   shift 2 ;;
+        --old-overcooked) OLD_OVERCOOKED=true;   shift ;;
+        --max_steps|--max-steps) MAX_STEPS="$2"; shift 2 ;;
         *)
             echo "Unknown option: $1"
             echo "Usage: $0 --dir <directory> [options]"
@@ -42,6 +46,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --no_viz               Skip video generation (only compute metrics)"
             echo "  --no_reset             Disable random reset and permutations"
             echo "  --pairing_policy <id>  Policy index for pairing in cross-play"
+            echo "  --max_steps <n>        Eval rollout max steps override"
             exit 1
             ;;
     esac
@@ -73,6 +78,8 @@ echo "Cross-play: $CROSS"
 echo "All modes: $ALL"
 echo "No visualization: $NO_VIZ"
 echo "No reset: $NO_RESET"
+echo "Old overcooked: $OLD_OVERCOOKED"
+[ -n "$MAX_STEPS" ] && echo "Max steps override: $MAX_STEPS"
 [ -n "$PAIRING_POLICY" ] && echo "Pairing policy: $PAIRING_POLICY"
 echo "===================================="
 
@@ -85,6 +92,8 @@ ARGS=( --d "$DIRECTORY" --seed "$SEED" --num_seeds "$NUM_SEEDS" )
 [ "$NO_VIZ" = true ] && ARGS+=( --no_viz )
 [ "$NO_RESET" = true ] && ARGS+=( --no_reset )
 [ -n "$PAIRING_POLICY" ] && ARGS+=( --pairing_policy "$PAIRING_POLICY" )
+[ "$OLD_OVERCOOKED" = true ] && ARGS+=( --old_overcooked )
+[ -n "$MAX_STEPS" ] && ARGS+=( --max_steps "$MAX_STEPS" )
 
 # Change to experiments directory
 cd "$(dirname "$0")/.." || exit 1
