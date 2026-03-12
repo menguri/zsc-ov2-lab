@@ -214,6 +214,10 @@ overcooked_v2_experiments/human_rl/imitation/processed_data
 !JaxMARL/jaxmarl/environments/overcooked_v2/
 !JaxMARL/jaxmarl/environments/overcooked_v2/**
 
+# Keep training-required JaxMARL environment source/assets trackable.
+!JaxMARL/jaxmarl/environments/overcooked_v2/
+!JaxMARL/jaxmarl/environments/overcooked_v2/**
+
 # -----------------------------------------------------------------------------
 # Local experiment artifacts (do not commit)
 # -----------------------------------------------------------------------------

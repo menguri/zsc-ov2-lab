@@ -166,7 +166,7 @@ run_fcp "0,1,2,3,4" "cramped_room" ""
 run_fcp "0,1,2,3,4" "asymm_advantages" ""
 
 # 9. Coordination Ring (Original)
-run_fcp "0,1,2,3,4" "coord_ring" ""
+# run_fcp "0,1,2,3,4" "coord_ring" ""
 
 # # 10. Forced Coordination (Original)
 run_fcp "0,1,2,3,4" "forced_coord" ""
